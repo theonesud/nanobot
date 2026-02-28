@@ -98,7 +98,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "C", "B"]
-ignore = ["E501"]
+ignore = ["E501", "C901"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["nanobot", "bridge", "tests", "case"]

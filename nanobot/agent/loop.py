@@ -7,7 +7,7 @@ import json
 import re
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -25,7 +25,7 @@ from nanobot.agent.tools.system import ReloadTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, ToolCallRequest
 from nanobot.session.manager import Session, SessionManager
 from nanobot.utils.database import Database
 
@@ -331,7 +331,9 @@ class AgentLoop:
                 chat_id = metadata.get("chat_id")
                 thread_ts = metadata.get("thread_ts")
 
-                async def _execute_tool(tc: Any) -> tuple[str, str, str]:
+                async def _execute_tool(
+                    tc: Any, channel=channel, chat_id=chat_id, thread_ts=thread_ts
+                ) -> tuple[str, str, str]:
                     tools_used.append(tc.name)
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tc.name, args_str[:200])
@@ -462,112 +464,74 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
 
-    async def _process_message(
-        self,
-        msg: InboundMessage,
-        session_key: str | None = None,
-        on_progress: Callable[[str], Awaitable[None]] | None = None,
-    ) -> OutboundMessage | None:
-        """Process a single inbound message and return the response."""
-        # System messages: parse origin from chat_id ("channel:chat_id")
-        if msg.channel == "system":
-            channel, chat_id = (
-                msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
-            )
-            logger.info("Processing system message from {}", msg.sender_id)
-            key = f"{channel}:{chat_id}"
-            session = self.sessions.get_or_create(key)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            history = session.get_history(max_messages=self.memory_window)
-            messages = self.context.build_messages(
-                history=history,
-                current_message=msg.content,
-                channel=channel,
-                chat_id=chat_id,
-            )
-            # Inject metadata for tool call routing
-            messages[0]["_nanobot_metadata"] = {
-                "channel": channel,
-                "chat_id": chat_id,
-                "message_id": msg.metadata.get("message_id"),
-            }
-            final_content, _, all_msgs = await self._run_agent_loop(
-                messages, session_key=session.key
-            )
-            self._save_turn(
-                session, all_msgs, len(messages) - 1
-            )  # Correct skip: current user msg and context were added
-            self.sessions.save(session)
-            return OutboundMessage(
-                channel=channel,
-                chat_id=chat_id,
-                content=final_content or "Background task completed.",
-            )
-
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
-
-        key = session_key or msg.session_key
+    async def _handle_system_message(self, msg: InboundMessage) -> OutboundMessage:
+        """Handle internal system messages from background tasks/cron."""
+        channel, chat_id = msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
+        logger.info("Processing system message from {}", msg.sender_id)
+        key = f"{channel}:{chat_id}"
         session = self.sessions.get_or_create(key)
+        self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+        history = session.get_history(max_messages=self.memory_window)
+        messages = self.context.build_messages(
+            history=history,
+            current_message=msg.content,
+            channel=channel,
+            chat_id=chat_id,
+        )
+        # Inject metadata for tool call routing
+        messages[0]["_nanobot_metadata"] = {
+            "channel": channel,
+            "chat_id": chat_id,
+            "message_id": msg.metadata.get("message_id"),
+        }
+        final_content, _, all_msgs = await self._run_agent_loop(messages, session_key=session.key)
+        self._save_turn(
+            session, all_msgs, len(messages) - 1
+        )  # Correct skip: current user msg and context were added
+        self.sessions.save(session)
+        return OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content=final_content or "Background task completed.",
+        )
 
-        # God Mode check
-        is_godmode = msg.metadata.get("is_godmode", False)
-        if is_godmode:
-            logger.warning("🚨 GOD MODE active for session {}", session.key)
-            god_prompt = (
-                "\n\n--- [SYSTEM NOTICE: GOD MODE ACTIVE] ---\n"
-                "You have been granted full permissions to modify your own source code accurately. "
-                "1. Research your implementation by reading files in your workspace.\n"
-                "2. Implement the requested changes.\n"
-                "3. Use `ruff check nanobot` or other shell commands to verify syntax.\n"
-                "4. Call `reload_agent` to restart and apply changes.\n"
-                "DO NOT fail. If you break the code, you will stop functioning."
-            )
-            # Inject into msg.content so it's part of the current user turn
-            msg.content += god_prompt
-
-        # Slash commands
-        cmd = msg.content.strip().lower()
-        if cmd == "/new":
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-            self._consolidating.add(session.key)
-            try:
-                async with lock:
-                    snapshot = session.messages[session.last_consolidated :]
-                    if snapshot:
-                        temp = Session(key=session.key)
-                        temp.messages = list(snapshot)
-                        if not await self.context.memory.consolidate(
-                            temp, self.provider, self.model, archive_all=True
-                        ):
-                            return OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="Memory archival failed, session not cleared. Please try again.",
-                            )
-            except Exception:
-                logger.exception("/new archival failed for {}", session.key)
-                return OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content="Memory archival failed, session not cleared. Please try again.",
-                )
-            finally:
-                self._consolidating.discard(session.key)
-
-            session.clear()
-            self.sessions.save(session)
-            self.sessions.invalidate(session.key)
-            return OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id, content="New session started."
-            )
-        if cmd == "/help":
+    async def _handle_new_command(self, session: Session, msg: InboundMessage) -> OutboundMessage:
+        """Handle the /new slash command."""
+        lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+        self._consolidating.add(session.key)
+        try:
+            async with lock:
+                snapshot = session.messages[session.last_consolidated :]
+                if snapshot:
+                    temp = Session(key=session.key)
+                    temp.messages = list(snapshot)
+                    if not await self.context.memory.consolidate(
+                        temp, self.provider, self.model, archive_all=True
+                    ):
+                        return OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content="Memory archival failed, session not cleared. Please try again.",
+                        )
+        except Exception:
+            logger.exception("/new archival failed for {}", session.key)
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+                content="Memory archival failed, session not cleared. Please try again.",
             )
+        finally:
+            self._consolidating.discard(session.key)
 
+        session.clear()
+        self.sessions.save(session)
+        self.sessions.invalidate(session.key)
+        return OutboundMessage(
+            channel=msg.channel, chat_id=msg.chat_id, content="New session started."
+        )
+
+    def _check_consolidation(self, session: Session) -> None:
+        """Trigger memory consolidation if memory window is exceeded."""
         unconsolidated = len(session.messages) - session.last_consolidated
         if unconsolidated >= self.memory_window and session.key not in self._consolidating:
             self._consolidating.add(session.key)
@@ -595,6 +559,51 @@ class AgentLoop:
 
             _task = asyncio.create_task(_consolidate_and_unlock())
             self._consolidation_tasks.add(_task)
+
+    async def _process_message(
+        self,
+        msg: InboundMessage,
+        session_key: str | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+    ) -> OutboundMessage | None:
+        """Process a single inbound message and return the response."""
+        if msg.channel == "system":
+            return await self._handle_system_message(msg)
+
+        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+
+        key = session_key or msg.session_key
+        session = self.sessions.get_or_create(key)
+
+        # God Mode check
+        is_godmode = msg.metadata.get("is_godmode", False)
+        if is_godmode:
+            logger.warning("🚨 GOD MODE active for session {}", session.key)
+            god_prompt = (
+                "\n\n--- [SYSTEM NOTICE: GOD MODE ACTIVE] ---\n"
+                "You have been granted full permissions to modify your own source code accurately. "
+                "1. Research your implementation by reading files in your workspace.\n"
+                "2. Implement the requested changes.\n"
+                "3. Use `ruff check nanobot` or other shell commands to verify syntax.\n"
+                "4. Call `reload_agent` to restart and apply changes.\n"
+                "DO NOT fail. If you break the code, you will stop functioning."
+            )
+            # Inject into msg.content so it's part of the current user turn
+            msg.content += god_prompt
+
+        # Slash commands
+        cmd = msg.content.strip().lower()
+        if cmd == "/new":
+            return await self._handle_new_command(session, msg)
+        if cmd == "/help":
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+            )
+
+        self._check_consolidation(session)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):

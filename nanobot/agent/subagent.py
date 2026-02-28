@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from nanobot.agent.auditor import CommandAuditor
     from nanobot.config.schema import ExecToolConfig
 
 from loguru import logger
