@@ -218,10 +218,8 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = "~/.nanobot/workspace"
-    model: str = "anthropic/claude-opus-4-5"
-    provider: str = (
-        "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
-    )
+    model: str = "opencode-default"
+    provider: str = "opencode"
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40

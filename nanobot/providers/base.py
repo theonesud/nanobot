@@ -88,6 +88,7 @@ class LLMProvider(ABC):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        on_progress: Any | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -102,9 +103,9 @@ class LLMProvider(ABC):
         Returns:
             LLMResponse with content and/or tool calls.
         """
-        pass
+        ...
 
     @abstractmethod
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
-        pass
+        ...

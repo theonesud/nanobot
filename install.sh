@@ -48,6 +48,18 @@ if [ -d "bridge" ]; then
     cd ..
 fi
 
+# 5. Initialize configuration
+echo "⚙️ Initializing configuration..."
+uv run python -c "from nanobot.config.loader import load_config; load_config()"
+
+# 6. Install OpenCode CLI
+echo "🛠️ Installing OpenCode CLI..."
+if ! command -v opencode &> /dev/null; then
+    curl -fsSL https://opencode.ai/install | bash
+else
+    echo "🟢 OpenCode CLI is already installed"
+fi
+
 echo ""
 echo "✅ Setup complete! You can now start the assistant with:"
 echo "   uv run nanobot agent"

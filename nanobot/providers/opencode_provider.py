@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -35,17 +35,18 @@ class OpenCodeProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via OpenCode CLI.
 
         Args:
             messages: List of message dicts with 'role' and 'content'.
-            tools: Optional list of tool definitions (ignored if OpenCode manages them itself,
-                   or passed if bridged).
-            model: Model identifier (ignored for now as opencode handles it internally).
+            tools: Optional list of tool definitions.
+            model: Model identifier.
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            on_progress: Optional callback to stream progress.
 
         Returns:
             LLMResponse with content.
@@ -79,6 +80,7 @@ class OpenCodeProvider(LLMProvider):
             full_content = []
             usage = {}
             finish_reason = "stop"
+            step_count = 0
 
             if process.stdout:
                 async for line in process.stdout:
@@ -86,11 +88,27 @@ class OpenCodeProvider(LLMProvider):
                         break
                     try:
                         event = json.loads(line.decode().strip())
-                        if event.get("type") == "text":
-                            full_content.append(event["part"]["text"])
-                        elif event.get("type") == "step_finish":
-                            finish_reason = event["part"].get("reason", "stop")
-                            usage = event["part"].get("tokens", {})
+                        evt_type = event.get("type")
+                        part = event.get("part", {})
+
+                        if evt_type == "step_start":
+                            step_count += 1
+                            if on_progress:
+                                await on_progress(f"⚙️ opencode: Thinking (Step {step_count})...")
+                        elif evt_type == "text":
+                            full_content.append(part.get("text", ""))
+                        elif evt_type == "tool_use":
+                            if on_progress:
+                                tool_name = part.get("tool", "tool")
+                                state = part.get("state", {})
+                                target = state.get("title") or state.get("command") or ""
+                                if len(target) > 50:
+                                    target = target[:50] + "..."
+                                msg = f"⚙️ opencode: {tool_name}({target})" if target else f"⚙️ opencode: {tool_name}"
+                                await on_progress(msg)
+                        elif evt_type == "step_finish":
+                            finish_reason = part.get("reason", "stop")
+                            usage = part.get("tokens", {})
                     except Exception as e:
                         logger.debug(f"Failed to parse line from OpenCode: {e}")
 
