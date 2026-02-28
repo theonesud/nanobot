@@ -41,7 +41,9 @@ class SkillsLoader:
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists():
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
+                        skills.append(
+                            {"name": skill_dir.name, "path": str(skill_file), "source": "workspace"}
+                        )
 
         # Built-in skills
         if self.builtin_skills and self.builtin_skills.exists():
@@ -49,7 +51,9 @@ class SkillsLoader:
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "builtin"})
+                        skills.append(
+                            {"name": skill_dir.name, "path": str(skill_file), "source": "builtin"}
+                        )
 
         # Filter by requirements
         if filter_unavailable:
@@ -123,7 +127,7 @@ class SkillsLoader:
             skill_meta = self._get_skill_meta(s["name"])
             available = self._check_requirements(skill_meta)
 
-            lines.append(f"  <skill available=\"{str(available).lower()}\">")
+            lines.append(f'  <skill available="{str(available).lower()}">')
             lines.append(f"    <name>{name}</name>")
             lines.append(f"    <description>{desc}</description>")
             lines.append(f"    <location>{path}</location>")
@@ -151,19 +155,36 @@ class SkillsLoader:
                 missing.append(f"ENV: {env}")
         return ", ".join(missing)
 
+    def _get_skill_meta(self, name: str) -> dict:
+        """Get nanobot metadata for a skill (cached)."""
+        if not hasattr(self, "_meta_cache"):
+            self._meta_cache = {}
+        if name in self._meta_cache:
+            return self._meta_cache[name]
+
+        meta = self.get_skill_metadata(name) or {}
+        res = self._parse_nanobot_metadata(meta.get("metadata", ""))
+        self._meta_cache[name] = res
+        return res
+
     def _get_skill_description(self, name: str) -> str:
-        """Get the description of a skill from its frontmatter."""
+        """Get the description of a skill (cached)."""
+        if not hasattr(self, "_desc_cache"):
+            self._desc_cache = {}
+        if name in self._desc_cache:
+            return self._desc_cache[name]
+
         meta = self.get_skill_metadata(name)
-        if meta and meta.get("description"):
-            return meta["description"]
-        return name  # Fallback to skill name
+        res = meta.get("description", name) if meta else name
+        self._desc_cache[name] = res
+        return res
 
     def _strip_frontmatter(self, content: str) -> str:
         """Remove YAML frontmatter from markdown content."""
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:
-                return content[match.end():].strip()
+                return content[match.end() :].strip()
         return content
 
     def _parse_nanobot_metadata(self, raw: str) -> dict:
@@ -217,12 +238,19 @@ class SkillsLoader:
         if content.startswith("---"):
             match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
             if match:
-                # Simple YAML parsing
-                metadata = {}
-                for line in match.group(1).split("\n"):
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"\'')
-                return metadata
+                # Fixed #16: Use PyYAML for reliable frontmatter parsing
+                try:
+                    import yaml
+
+                    return yaml.safe_load(match.group(1)) or {}
+                except ImportError:
+                    # Simple fallback logic if yaml not available
+                    metadata = {}
+                    for line in match.group(1).split("\n"):
+                        if ":" in line:
+                            parts = line.split(":", 1)
+                            if len(parts) == 2:
+                                metadata[parts[0].strip()] = parts[1].strip().strip("\"'")
+                    return metadata
 
         return None

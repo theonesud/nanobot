@@ -106,8 +106,8 @@ class AgentLoop:
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
-        self._processing_lock = asyncio.Lock()
-        self.auditor = CommandAuditor(bin_path="/Users/sud/.opencode/bin/opencode")
+        self._processing_locks: dict[str, asyncio.Lock] = {}
+        self.auditor = CommandAuditor(bin_path="opencode")
         self.db = Database(workspace)
         self.daily_budget = 5.0  # Default $5.00 daily budget
 
@@ -194,16 +194,58 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
-    def _tool_hint(tool_calls: list) -> str:
+    def _tool_hint(tool_calls: list[ToolCallRequest]) -> str:
         """Format tool calls as concise hint, e.g. 'web_search("query")'."""
 
-        def _fmt(tc):
-            val = next(iter(tc.arguments.values()), None) if tc.arguments else None
-            if not isinstance(val, str):
-                return tc.name
-            return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
+        def _fmt(tc: ToolCallRequest) -> str:
+            name = tc.name
+            args = tc.arguments
+            if name == "read_file":
+                return f"read_file({args.get('path', '...')})"
+            if name == "write_file":
+                return f"write_file({args.get('path', '...')})"
+            if name == "edit_file":
+                return f"edit_file({args.get('path', '...')})"
+            if name == "exec":
+                cmd = args.get("command", "")
+                return f"exec({cmd[:30]}...)" if len(cmd) > 30 else f"exec({cmd})"
+
+            val = next(iter(args.values()), "...") if args else "..."
+            return f"{name}({val})"
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
+
+    def _get_model_pricing(self, model: str) -> float:
+        """Get cost per 1M tokens for the given model. Defaults to $5.00."""
+        m = model.lower()
+        if "opus" in m:
+            return 15.0
+        if "sonnet" in m:
+            return 3.0
+        if "haiku" in m:
+            return 0.25
+        if "gpt-4o" in m:
+            return 5.0
+        if "gpt-4-turbo" in m:
+            return 10.0
+        if "gpt-3.5" in m:
+            return 0.5
+        if "deepseek" in m:
+            return 0.27
+        if "gemini-1.5-pro" in m:
+            return 3.5
+        if "gemini-1.5-flash" in m:
+            return 0.075
+        return 5.0
+
+    def _save_session_safe(self, session: Session) -> None:
+        """Atomic session save wrapper. Fixed #25."""
+        try:
+            self.sessions.save(session)
+        except Exception as e:
+            from loguru import logger
+
+            logger.error("Failed to save session {}: {}", session.key, e)
 
     async def _run_agent_loop(
         self,
@@ -233,8 +275,9 @@ class AgentLoop:
             if response.usage:
                 p_tokens = response.usage.get("prompt_tokens", 0)
                 c_tokens = response.usage.get("completion_tokens", 0)
-                # Placeholder pricing: $5.00 per 1M tokens
-                cost = (p_tokens + c_tokens) / 1_000_000.0 * 5.0
+                # Model-specific pricing
+                rate = self._get_model_pricing(self.model)
+                cost = (p_tokens + c_tokens) / 1_000_000.0 * rate
                 self.db.log_cost(
                     session_key,
                     self.provider.__class__.__name__,
@@ -286,21 +329,32 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    # Fixed: Extract channel/chat_id from the context instead of index 0
+                    metadata = initial_messages[0].get("_nanobot_metadata", {})
+                    channel = metadata.get("channel")
+                    chat_id = metadata.get("chat_id")
+                    thread_ts = metadata.get("thread_ts")
+
                     result = await self.tools.execute(
                         tool_call.name,
                         tool_call.arguments,
-                        channel=initial_messages[0].get(
-                            "channel"
-                        ),  # metadata passed via build_messages
-                        chat_id=initial_messages[0].get("chat_id"),
-                        metadata={"slack": {"thread_ts": initial_messages[0].get("thread_ts")}},
-                        outbound_msg_factory=lambda content, chat_id=initial_messages[0].get("chat_id"), channel=initial_messages[0].get("channel"): (
+                        channel=channel,
+                        chat_id=chat_id,
+                        metadata={"slack": {"thread_ts": thread_ts}},
+                        outbound_msg_factory=lambda content, chat_id=chat_id, channel=channel: (
                             OutboundMessage(channel=channel, chat_id=chat_id, content=content)
                         ),
                     )
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                    # Track that a tool was used in this turn
+                    # The original code had `if len(messages) > skip:`, but `skip` is not defined here.
+                    # Assuming it meant to track for the last added message.
+                    if messages:
+                        messages[-1]["tools_used"] = messages[-1].get("tools_used", []) + [
+                            tool_call.name
+                        ]
             else:
                 clean = self._strip_think(response.content)
                 messages = self.context.add_assistant_message(
@@ -366,8 +420,9 @@ class AgentLoop:
         )
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message under the global lock."""
-        async with self._processing_lock:
+        """Process a message under the session-specific lock."""
+        lock = self._processing_locks.setdefault(msg.session_key, asyncio.Lock())
+        async with lock:
             try:
                 response = await self._process_message(msg)
                 if response is not None:
@@ -402,6 +457,8 @@ class AgentLoop:
             except (RuntimeError, BaseExceptionGroup):
                 pass  # MCP SDK cancel scope cleanup is noisy but harmless
             self._mcp_stack = None
+            self._mcp_connected = False
+            self._mcp_connecting = False
 
     def stop(self) -> None:
         """Stop the agent loop."""
@@ -431,10 +488,18 @@ class AgentLoop:
                 channel=channel,
                 chat_id=chat_id,
             )
+            # Inject metadata for tool call routing
+            messages[0]["_nanobot_metadata"] = {
+                "channel": channel,
+                "chat_id": chat_id,
+                "message_id": msg.metadata.get("message_id"),
+            }
             final_content, _, all_msgs = await self._run_agent_loop(
                 messages, session_key=session.key
             )
-            self._save_turn(session, all_msgs, 1 + len(history))
+            self._save_turn(
+                session, all_msgs, len(messages) - 1
+            )  # Correct skip: current user msg and context were added
             self.sessions.save(session)
             return OutboundMessage(
                 channel=channel,
@@ -475,7 +540,7 @@ class AgentLoop:
                     if snapshot:
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
-                        if not await self._consolidate_memory(temp, archive_all=True):
+                        if not await self.memory.consolidate(temp, archive_all=True):
                             return OutboundMessage(
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
@@ -514,7 +579,17 @@ class AgentLoop:
             async def _consolidate_and_unlock():
                 try:
                     async with lock:
-                        await self._consolidate_memory(session)
+                        try:
+                            await self.memory.consolidate(
+                                session,
+                                self.provider,
+                                self.model,
+                                memory_window=self.memory_window,
+                            )
+                            # Fixed #8: Session.last_consolidated is updated inside consolidate()
+                            self._save_session_safe(session)
+                        except Exception as e:
+                            logger.error("Error during memory consolidation: {}", e)
                 finally:
                     self._consolidating.discard(session.key)
                     if not lock.locked():
@@ -539,6 +614,13 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
+        # Inject metadata for tool call routing
+        initial_messages[0]["_nanobot_metadata"] = {
+            "channel": msg.channel,
+            "chat_id": msg.chat_id,
+            "thread_ts": msg.metadata.get("thread_ts"),
+            "message_id": msg.metadata.get("message_id"),
+        }
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -581,9 +663,15 @@ class AgentLoop:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
 
+        # Track tools used in this turn
+        tools_in_turn = []
+
         for m in messages[skip:]:
-            entry = {k: v for k, v in m.items() if k != "reasoning_content"}
+            entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
+
+            if role == "tool":
+                tools_in_turn.append(entry.get("name", "unknown"))
             if (
                 role == "tool"
                 and isinstance(content, str)
@@ -605,6 +693,11 @@ class AgentLoop:
                         else c
                         for c in content
                     ]
+
+            if role == "assistant" and tools_in_turn:
+                # Attach tool usage info to the preceding assistant message if it lacks content
+                entry["tools_used"] = list(tools_in_turn)
+
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()

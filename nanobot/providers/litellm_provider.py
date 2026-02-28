@@ -14,8 +14,11 @@ from nanobot.providers.registry import find_by_model, find_gateway
 
 # Standard OpenAI chat-completion message keys plus reasoning_content for
 # thinking-enabled models (Kimi k2.5, DeepSeek-R1, etc.).
-_ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
+_ALLOWED_MSG_KEYS = frozenset(
+    {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
+)
 _ALNUM = string.ascii_letters + string.digits
+
 
 def _short_tool_id() -> str:
     """Generate a 9-char alphanumeric ID compatible with all providers (incl. Mistral)."""
@@ -132,7 +135,9 @@ class LiteLLMProvider(LLMProvider):
             if msg.get("role") == "system":
                 content = msg["content"]
                 if isinstance(content, str):
-                    new_content = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                    new_content = [
+                        {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                    ]
                 else:
                     new_content = list(content)
                     new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
@@ -148,14 +153,21 @@ class LiteLLMProvider(LLMProvider):
         return new_messages, new_tools
 
     def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
-        """Apply model-specific parameter overrides from the registry."""
-        model_lower = model.lower()
-        spec = find_by_model(model)
-        if spec:
-            for pattern, overrides in spec.model_overrides:
-                if pattern in model_lower:
-                    kwargs.update(overrides)
-                    return
+        """Fixed #28: Refined model override logic to avoid accidental matches."""
+        from nanobot.providers.registry import PROVIDERS
+
+        provider_name = model.split("/", 1)[0] if "/" in model else ""
+        model_name = model.split("/", 1)[1] if "/" in model else model
+
+        # Look for the specific provider's override list
+        for spec in PROVIDERS:
+            # Match based on explicit provider name or keywords
+            if spec.name == provider_name or any(k in provider_name for k in spec.keywords):
+                for pattern, overrides in spec.model_overrides.items():
+                    if pattern in model_name:
+                        kwargs.update(overrides)
+                        logger.debug("Applied model overrides for {}: {}", model, overrides)
+                        return
 
     @staticmethod
     def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -176,6 +188,7 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        on_progress: Any | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -249,11 +262,13 @@ class LiteLLMProvider(LLMProvider):
                 if isinstance(args, str):
                     args = json_repair.loads(args)
 
-                tool_calls.append(ToolCallRequest(
-                    id=_short_tool_id(),
-                    name=tc.function.name,
-                    arguments=args,
-                ))
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=_short_tool_id(),
+                        name=tc.function.name,
+                        arguments=args,
+                    )
+                )
 
         usage = {}
         if hasattr(response, "usage") and response.usage:

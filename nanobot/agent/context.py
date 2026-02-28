@@ -23,39 +23,47 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self._provider_hint = "auto"
+        self._prompt_cache = {}
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
-        parts = [self._get_identity()]
+        """
+        Build the full system prompt for the agent.
+        Fixed #18: Cached system prompt parts.
+        """
+        # Identity and bootstrap are static during process lifetime
+        if "base" not in self._prompt_cache:
+            identity = self._get_identity()
+            bootstrap = self._load_bootstrap_files()
+            self._prompt_cache["base"] = f"{identity}\n\n{bootstrap}"
 
-        bootstrap = self._load_bootstrap_files()
-        if bootstrap:
-            parts.append(bootstrap)
+        base = self._prompt_cache["base"]
+        memory_ctx = self.memory.get_memory_context()
 
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        # Skills summary is mostly static but depend on env/bins (check occasionally?)
+        # For now we use the summary builder which is already optimized with its own cache in SkillsLoader
+        skill_sum = self.skills.build_skills_summary()
 
-        always_skills = self.skills.get_always_skills()
-        if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
+        parts = [
+            base,
+            "## Context",
+            memory_ctx,
+            "## Capabilities",
+            skill_sum,
+        ]
 
-        skills_summary = self.skills.build_skills_summary()
-        if skills_summary:
-            parts.append(f"""# Skills
+        # Individual skill details (only if requested)
+        if skill_names:
+            skill_details = self.skills.load_skills_for_context(skill_names)
+            if skill_details:
+                parts.extend(["## Skill Details", skill_details])
 
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
-Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
-
-{skills_summary}""")
-
-        return "\n\n---\n\n".join(parts)
+        return "\n\n".join([p for p in parts if p.strip()])
 
     def set_provider_hint(self, provider_name: str) -> None:
         """Inform context builder about the current provider to optimize prompt."""
-        self._provider_hint = provider_name
+        if self._provider_hint != provider_name:
+            self._provider_hint = provider_name
+            self._prompt_cache.clear()  # Invalidate cache when hint changes
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
@@ -91,6 +99,24 @@ Your workspace is at: {workspace_path}
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel."""
 
+    def _load_bootstrap_files(self) -> str:
+        """Load all bootstrap files from workspace."""
+        parts = []
+        for filename in self.BOOTSTRAP_FILES:
+            file_path = self.workspace / filename
+            if file_path.exists():
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                    parts.append(f"## {filename}\n\n{content}")
+                except Exception as e:
+                    import logging
+
+                    logging.getLogger("nanobot").warning(
+                        f"Failed to load bootstrap file {filename}: {e}"
+                    )
+
+        return "\n\n".join(parts) if parts else ""
+
     @staticmethod
     def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
         """Build untrusted runtime metadata block for injection before the user message."""
@@ -100,18 +126,6 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if channel and chat_id:
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
-
-    def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
-        parts = []
-
-        for filename in self.BOOTSTRAP_FILES:
-            file_path = self.workspace / filename
-            if file_path.exists():
-                content = file_path.read_text(encoding="utf-8")
-                parts.append(f"## {filename}\n\n{content}")
-
-        return "\n\n".join(parts) if parts else ""
 
     def build_messages(
         self,
@@ -135,18 +149,21 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if not media:
             return text
 
-        images = []
+        content = [{"type": "text", "text": text}]
         for path in media:
             p = Path(path)
             mime, _ = mimetypes.guess_type(path)
             if not p.is_file() or not mime or not mime.startswith("image/"):
                 continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            try:
+                b64 = base64.b64encode(p.read_bytes()).decode()
+                content.append(
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+                )
+            except Exception:
+                pass
 
-        if not images:
-            return text
-        return images + [{"type": "text", "text": text}]
+        return content
 
     def add_tool_result(
         self,

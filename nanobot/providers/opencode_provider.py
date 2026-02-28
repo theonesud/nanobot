@@ -53,20 +53,35 @@ class OpenCodeProvider(LLMProvider):
         """
         # Build prompt from conversation history to provide full context
         prompt_parts = []
-        for m in messages[:-1]:
+        for m in messages:
             role = m.get("role", "user")
             content = m.get("content") or ""
             if role == "system":
                 continue  # System prompt is passed via separate flag
-            # Format history in a way that the intelligence engine can easily parse
-            prompt_parts.append(f"### {role.upper()}\n{content}")
+            # Use XML tags which are better understood by models for turn-taking
+            prompt_parts.append(f"<{role.upper()}>\n{content}\n</{role.upper()}>")
 
-        last_msg = messages[-1].get("content", "") if messages else ""
         system_msg = next((m.get("content") for m in messages if m.get("role") == "system"), None)
 
-        full_prompt = "\n\n".join(prompt_parts + [str(last_msg)])
+        full_prompt = "\n\n".join(prompt_parts)
         if system_msg:
-            full_prompt = f"### SYSTEM\n{system_msg}\n\n{full_prompt}"
+            full_prompt = f"<SYSTEM>\n{system_msg}\n</SYSTEM>\n\n{full_prompt}"
+
+        # We append a final instruction so the model knows it's its turn to reply
+        full_prompt += "\n\n<SYSTEM>\nPlease respond to the last <USER> message.</SYSTEM>"
+
+        if tools:
+            # Fixed #11: Inform OpenCode about available tools in the system context
+            tool_summary = "\n".join(
+                [
+                    f"- {t['function']['name']}: {t['function'].get('description', '')}"
+                    for t in tools
+                ]
+            )
+            full_prompt = (
+                f"<SYSTEM>\nYou can use these Nanobot tools if needed:\n{tool_summary}\n</SYSTEM>\n\n"
+                + full_prompt
+            )
 
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
 
@@ -81,6 +96,15 @@ class OpenCodeProvider(LLMProvider):
             usage = {}
             finish_reason = "stop"
             step_count = 0
+            stderr_buffer = []
+
+            async def consume_stderr():
+                if process.stderr:
+                    async for line in process.stderr:
+                        if line:
+                            stderr_buffer.append(line.decode(errors="replace"))
+
+            stderr_task = asyncio.create_task(consume_stderr())
 
             if process.stdout:
                 async for line in process.stdout:
@@ -104,7 +128,11 @@ class OpenCodeProvider(LLMProvider):
                                 target = state.get("title") or state.get("command") or ""
                                 if len(target) > 50:
                                     target = target[:50] + "..."
-                                msg = f"⚙️ opencode: {tool_name}({target})" if target else f"⚙️ opencode: {tool_name}"
+                                msg = (
+                                    f"⚙️ opencode: {tool_name}({target})"
+                                    if target
+                                    else f"⚙️ opencode: {tool_name}"
+                                )
                                 await on_progress(msg)
                         elif evt_type == "step_finish":
                             finish_reason = part.get("reason", "stop")
@@ -113,11 +141,12 @@ class OpenCodeProvider(LLMProvider):
                         logger.debug(f"Failed to parse line from OpenCode: {e}")
 
             await process.wait()
+            await stderr_task
 
             if process.returncode != 0:
-                stderr_data = await process.stderr.read() if process.stderr else b""
+                stderr_data = "".join(stderr_buffer)
                 return LLMResponse(
-                    content=f"Error calling OpenCode CLI (exit code {process.returncode}):\n{stderr_data.decode()}",
+                    content=f"Error calling OpenCode CLI (exit code {process.returncode}):\n{stderr_data}",
                     finish_reason="error",
                 )
 

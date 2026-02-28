@@ -49,6 +49,10 @@ class MessageBus:
         """Publish an approval request to the UI/Channel layer."""
         if req.id not in self.approval_responses:
             self.approval_responses[req.id] = asyncio.Queue()
+            # Fixed #21: Auto-cleanup leak after 1 hour if never waited for
+            asyncio.get_event_loop().call_later(
+                3600, lambda: self.approval_responses.pop(req.id, None)
+            )
         await self.approval_requests.put(req)
 
     async def consume_approval_request(self) -> ApprovalRequest:

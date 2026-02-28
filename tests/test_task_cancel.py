@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _make_loop():
+def _make_loop(workspace: Path):
     """Create a minimal AgentLoop with mocked dependencies."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
@@ -16,12 +16,12 @@ def _make_loop():
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    workspace = MagicMock()
-    workspace.__truediv__ = MagicMock(return_value=MagicMock())
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+    with (
+        patch("nanobot.agent.loop.ContextBuilder"),
+        patch("nanobot.agent.loop.SessionManager"),
+        patch("nanobot.agent.loop.SubagentManager") as MockSubMgr,
+    ):
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
     return loop, bus
@@ -29,20 +29,20 @@ def _make_loop():
 
 class TestHandleStop:
     @pytest.mark.asyncio
-    async def test_stop_no_active_task(self):
+    async def test_stop_no_active_task(self, temp_workspace):
         from nanobot.bus.events import InboundMessage
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(temp_workspace)
         msg = InboundMessage(channel="test", sender_id="u1", chat_id="c1", content="/stop")
         await loop._handle_stop(msg)
         out = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
         assert "No active task" in out.content
 
     @pytest.mark.asyncio
-    async def test_stop_cancels_active_task(self):
+    async def test_stop_cancels_active_task(self, temp_workspace):
         from nanobot.bus.events import InboundMessage
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(temp_workspace)
         cancelled = asyncio.Event()
 
         async def slow_task():
@@ -64,10 +64,10 @@ class TestHandleStop:
         assert "stopped" in out.content.lower()
 
     @pytest.mark.asyncio
-    async def test_stop_cancels_multiple_tasks(self):
+    async def test_stop_cancels_multiple_tasks(self, temp_workspace):
         from nanobot.bus.events import InboundMessage
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(temp_workspace)
         events = [asyncio.Event(), asyncio.Event()]
 
         async def slow(idx):
@@ -91,10 +91,10 @@ class TestHandleStop:
 
 class TestDispatch:
     @pytest.mark.asyncio
-    async def test_dispatch_processes_and_publishes(self):
+    async def test_dispatch_processes_and_publishes(self, temp_workspace):
         from nanobot.bus.events import InboundMessage, OutboundMessage
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(temp_workspace)
         msg = InboundMessage(channel="test", sender_id="u1", chat_id="c1", content="hello")
         loop._process_message = AsyncMock(
             return_value=OutboundMessage(channel="test", chat_id="c1", content="hi")
@@ -104,10 +104,10 @@ class TestDispatch:
         assert out.content == "hi"
 
     @pytest.mark.asyncio
-    async def test_processing_lock_serializes(self):
+    async def test_processing_lock_serializes(self, temp_workspace):
         from nanobot.bus.events import InboundMessage, OutboundMessage
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(temp_workspace)
         order = []
 
         async def mock_process(m, **kwargs):

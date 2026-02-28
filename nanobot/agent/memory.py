@@ -46,20 +46,21 @@ class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
 
     def __init__(self, workspace: Path):
-        self.memory_dir = ensure_dir(workspace / "memory")
-        self.memory_file = self.memory_dir / "MEMORY.md"
-        self.history_file = self.memory_dir / "HISTORY.md"
+        self.memory_path = workspace / "memory" / "MEMORY.md"
+        self.history_path = workspace / "memory" / "HISTORY.md"
 
     def read_long_term(self) -> str:
-        if self.memory_file.exists():
-            return self.memory_file.read_text(encoding="utf-8")
+        if self.memory_path.exists():
+            return self.memory_path.read_text(encoding="utf-8")
         return ""
 
     def write_long_term(self, content: str) -> None:
-        self.memory_file.write_text(content, encoding="utf-8")
+        self.memory_path.parent.mkdir(parents=True, exist_ok=True)
+        self.memory_path.write_text(content, encoding="utf-8")
 
     def append_history(self, entry: str) -> None:
-        with open(self.history_file, "a", encoding="utf-8") as f:
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.history_path, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
 
     def get_memory_context(self) -> str:
@@ -89,17 +90,24 @@ class MemoryStore:
                 return True
             if len(session.messages) - session.last_consolidated <= 0:
                 return True
-            old_messages = session.messages[session.last_consolidated:-keep_count]
+            old_messages = session.messages[session.last_consolidated : -keep_count]
             if not old_messages:
                 return True
-            logger.info("Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count)
+            logger.info(
+                "Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count
+            )
 
         lines = []
         for m in old_messages:
-            if not m.get("content"):
+            # Fixed #6: Allow assistant messages with tool calls but no content
+            if not m.get("content") and not m.get("tool_calls"):
                 continue
+            # Fixed #6: Handle empty content gracefully when tools are present
+            content_str = m.get("content") or ("(action)" if m.get("tool_calls") else "")
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-            lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+            lines.append(
+                f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {content_str}"
+            )
 
         current_memory = self.read_long_term()
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
@@ -113,7 +121,10 @@ class MemoryStore:
         try:
             response = await provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
+                    {
+                        "role": "system",
+                        "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 tools=_SAVE_MEMORY_TOOL,
@@ -129,7 +140,9 @@ class MemoryStore:
             if isinstance(args, str):
                 args = json.loads(args)
             if not isinstance(args, dict):
-                logger.warning("Memory consolidation: unexpected arguments type {}", type(args).__name__)
+                logger.warning(
+                    "Memory consolidation: unexpected arguments type {}", type(args).__name__
+                )
                 return False
 
             if entry := args.get("history_entry"):
@@ -143,7 +156,11 @@ class MemoryStore:
                     self.write_long_term(update)
 
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-            logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
+            logger.info(
+                "Memory consolidation done: {} messages, last_consolidated={}",
+                len(session.messages),
+                session.last_consolidated,
+            )
             return True
         except Exception:
             logger.exception("Memory consolidation failed")

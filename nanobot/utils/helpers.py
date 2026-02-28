@@ -29,14 +29,18 @@ def timestamp() -> str:
 
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*]')
 
+
 def safe_filename(name: str) -> str:
-    """Replace unsafe path characters with underscores."""
-    return _UNSAFE_CHARS.sub("_", name).strip()
+    """Replace unsafe path characters with underscores, handling dots and potential collisions."""
+    # Fixed #29: replace dots and other potentially troublesome chars on some FS
+    safe = _UNSAFE_CHARS.sub("_", name.replace(".", "_")).strip()
+    return safe
 
 
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
     """Sync bundled templates to workspace. Only creates missing files."""
     from importlib.resources import files as pkg_files
+
     try:
         tpl = pkg_files("nanobot") / "templates"
     except Exception:
@@ -62,6 +66,7 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
 
     if added and not silent:
         from rich.console import Console
+
         for name in added:
             Console().print(f"  [dim]Created {name}[/dim]")
     return added

@@ -14,19 +14,17 @@ from nanobot.providers.registry import find_by_model
 runner = CliRunner()
 
 
-
-
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
     config = Config()
     config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
-
+    config.agents.defaults.provider = "auto"
     assert config.get_provider_name() == "github_copilot"
 
 
 def test_config_matches_openai_codex_with_hyphen_prefix():
     config = Config()
     config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
-
+    config.agents.defaults.provider = "auto"
     assert config.get_provider_name() == "openai_codex"
 
 

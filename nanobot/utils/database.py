@@ -18,6 +18,8 @@ class Database:
         """Initialize database schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS task_costs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

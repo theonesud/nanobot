@@ -14,8 +14,8 @@ class ExecTool(Tool):
 
     def __init__(
         self,
-        timeout: int = 60,
         working_dir: str | None = None,
+        timeout: int = 60,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
         restrict_to_workspace: bool = False,
@@ -26,16 +26,16 @@ class ExecTool(Tool):
         self.timeout = timeout
         self.working_dir = working_dir
         self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",  # del /f, del /q
-            r"\brmdir\s+/s\b",  # rmdir /s
-            r"(?:^|[;&|]\s*)format\b",  # format (as standalone command only)
-            r"\b(mkfs|diskpart)\b",  # disk operations
-            r"\bdd\s+if=",  # dd
+            r"rm\s+-[rf]{1,2}",  # rm -r, rm -rf, rm -fr
+            r"del\s+/[fq]",  # del /f, del /q
+            r"rmdir\s+/s",  # rmdir /s
+            r"(?:^|[;&|]\s*)format",  # format (as standalone command only)
+            r"(mkfs|diskpart)",  # disk operations
+            r"dd\s+if=",  # dd
             r">\s*/dev/sd",  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
+            r"(shutdown|reboot|poweroff)",  # system power
             r":\(\)\s*\{.*\};\s*:",  # fork bomb
-            r"\bsudo\b",  # sudo
+            r"sudo",  # sudo
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
@@ -74,47 +74,55 @@ class ExecTool(Tool):
         # Phase 2: OpenCode Auditor check
         if self.auditor:
             from loguru import logger
+            import uuid
 
             logger.info(f"Auditing command: {command}")
             verdict = await self.auditor.evaluate(command)
             if verdict == "UNSAFE":
                 logger.warning(f"Auditor flagged command as UNSAFE: {command}")
-                if self.bus and kwargs.get("channel") == "slack":
-                    import uuid
-
+                if self.bus:
                     from nanobot.bus.events import ApprovalRequest
 
                     request_id = str(uuid.uuid4())
 
-                    # Notify user we are waiting for approval
-                    await self.bus.publish_outbound(
-                        kwargs.get("outbound_msg_factory")(
-                            content=f"⚠️ Auditor flagged this command as potentially unsafe. Please approve or reject in the Slack buttons below:\n`{command}`"
+                    # Notify user we are waiting for approval if possible
+                    if factory := kwargs.get("outbound_msg_factory"):
+                        await self.bus.publish_outbound(
+                            factory(
+                                content=f"⚠️ Auditor flagged this command as potentially unsafe. Please approve or reject:\n`{command}`"
+                            )
                         )
-                    )
 
                     req = ApprovalRequest(
                         id=request_id,
-                        channel="slack",
+                        channel=kwargs.get("channel", "cli"),
                         chat_id=kwargs.get("chat_id"),
-                        command=command,
-                        reason="Auditor flagged as UNSAFE",
+                        type="shell",
+                        title="Run potentially unsafe command?",
+                        content=command,
                         metadata={
-                            "thread_ts": kwargs.get("metadata", {})
-                            .get("slack", {})
-                            .get("thread_ts")
+                            "slack": {
+                                "thread_ts": kwargs.get("metadata", {})
+                                .get("slack", {})
+                                .get("thread_ts")
+                            }
                         },
                     )
                     await self.bus.publish_approval_request(req)
 
                     # Wait for approval
                     response = await self.bus.wait_for_approval(request_id)
-                    if not response or not response.approved:
-                        return "Error: Command rejected by user or timed out."
-                    logger.info("Command approved by user.")
+                    if response and response.approved:
+                        logger.info("Command approved by user.")
+                        return await self._execute_safe(command, working_dir)
+                    return f"Error: Command rejected by user or timed out: {response.reason if response else 'timeout'}"
                 else:
-                    return "Error: Command blocked by Auditor (UNSAFE) and no interactive channel available for approval."
+                    return f"Error: Command blocked by Auditor (UNSAFE) and no interactive channel available for approval (channel: {kwargs.get('channel')})."
 
+        return await self._execute_safe(command, working_dir)
+
+    async def _execute_safe(self, command: str, working_dir: str | None) -> str:
+        cwd = working_dir or self.working_dir or os.getcwd()
         env = os.environ.copy()
         if self.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
@@ -168,10 +176,10 @@ class ExecTool(Tool):
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
+        # Fixed #20: Match as full words to allow 'mysudo.sh'
         lower = cmd.lower()
-
         for pattern in self.deny_patterns:
-            if re.search(pattern, lower):
+            if re.search(rf"\b{pattern}\b", lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
 
         if self.allow_patterns:

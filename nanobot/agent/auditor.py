@@ -48,6 +48,13 @@ class CommandAuditor:
 
             full_content = []
 
+            async def consume_stderr():
+                if process.stderr:
+                    async for _ in process.stderr:
+                        pass
+
+            stderr_task = asyncio.create_task(consume_stderr())
+
             if process.stdout:
                 async for line in process.stdout:
                     if not line:
@@ -60,6 +67,7 @@ class CommandAuditor:
                         logger.debug(f"Auditor: failed to parse line: {e}")
 
             await process.wait()
+            await stderr_task
 
             result = "".join(full_content).strip().upper()
 
