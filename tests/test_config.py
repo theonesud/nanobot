@@ -1,16 +1,13 @@
 """Tests for config/schema.py."""
 
-import pytest
-from pydantic import ValidationError
-
 from nanobot.config.schema import (
+    AgentsConfig,
+    ChannelsConfig,
     Config,
+    EmailConfig,
+    ProviderConfig,
     SlackConfig,
     TelegramConfig,
-    EmailConfig,
-    ChannelsConfig,
-    ProviderConfig,
-    AgentsConfig,
 )
 
 
@@ -162,7 +159,7 @@ class TestConfig:
 
     def test_nested_config(self):
         """Test nested configuration structure."""
-        from nanobot.config.schema import AgentsConfig, AgentDefaults, ChannelsConfig, SlackConfig
+        from nanobot.config.schema import AgentDefaults, AgentsConfig, ChannelsConfig, SlackConfig
 
         config = Config(
             agents=AgentsConfig(defaults=AgentDefaults(model="gpt-4", max_tokens=4096)),
@@ -176,10 +173,10 @@ class TestConfig:
     def test_provider_matching(self):
         """Test provider matching logic."""
         from nanobot.config.schema import (
-            ProvidersConfig,
-            ProviderConfig,
-            AgentsConfig,
             AgentDefaults,
+            AgentsConfig,
+            ProviderConfig,
+            ProvidersConfig,
         )
 
         config = Config(
@@ -195,10 +192,10 @@ class TestConfig:
     def test_get_api_key(self):
         """Test getting API key for a model."""
         from nanobot.config.schema import (
-            ProvidersConfig,
-            ProviderConfig,
-            AgentsConfig,
             AgentDefaults,
+            AgentsConfig,
+            ProviderConfig,
+            ProvidersConfig,
         )
 
         config = Config(
@@ -211,10 +208,10 @@ class TestConfig:
     def test_get_provider_name(self):
         """Test getting provider name."""
         from nanobot.config.schema import (
-            ProvidersConfig,
-            ProviderConfig,
-            AgentsConfig,
             AgentDefaults,
+            AgentsConfig,
+            ProviderConfig,
+            ProvidersConfig,
         )
 
         config = Config(

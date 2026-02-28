@@ -24,7 +24,7 @@ class TestProviderSpec:
 
     def test_frozen_dataclass(self):
         spec = ProviderSpec(name="x", keywords=("x",), env_key="KEY")
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             spec.name = "y"
 
 

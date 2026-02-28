@@ -1,8 +1,8 @@
 """Tests for cron/service.py and cron/tasks.py."""
 
+from unittest.mock import AsyncMock
+
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronJob, CronSchedule

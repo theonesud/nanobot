@@ -1,10 +1,11 @@
 """Tests for bus/queue.py — MessageBus."""
 
 import asyncio
+
 import pytest
 
-from nanobot.bus.queue import MessageBus
 from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.queue import MessageBus
 
 
 class TestMessageBus:

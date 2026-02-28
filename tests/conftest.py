@@ -3,7 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -45,7 +45,12 @@ def mock_session():
     session = MagicMock()
     session.messages = [
         {"role": "user", "content": "Hello", "timestamp": "2026-02-28T10:00:00"},
-        {"role": "assistant", "content": "Hi there!", "timestamp": "2026-02-28T10:00:01", "tools_used": []},
+        {
+            "role": "assistant",
+            "content": "Hi there!",
+            "timestamp": "2026-02-28T10:00:01",
+            "tools_used": [],
+        },
     ]
     session.last_consolidated = 0
     return session

@@ -1,11 +1,5 @@
-import shutil
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 from typer.testing import CliRunner
 
-from nanobot.cli.commands import app
 from nanobot.config.schema import Config
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix

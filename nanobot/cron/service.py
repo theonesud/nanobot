@@ -217,20 +217,14 @@ class CronService:
         if not next_wake or not self._running:
             return
 
-        delay_ms = max(0, next_wake - _now_ms())
-        delay_s = delay_ms / 1000
-
         async def tick():
-            # Fixed #12: Cron timer drift
             # Recompute delay just before sleeping to minimize drift
             current_next_wake = self._get_next_wake_ms()
             if current_next_wake:
-                recomputed_delay_ms = max(0, current_next_wake - _now_ms())
-                recomputed_delay_s = recomputed_delay_ms / 1000
-                await asyncio.sleep(recomputed_delay_s)
+                delay_ms = max(0, current_next_wake - _now_ms())
+                await asyncio.sleep(delay_ms / 1000)
             else:
-                # If no next wake, sleep for a default period to recheck
-                await asyncio.sleep(60)  # Sleep for 1 minute
+                await asyncio.sleep(60)
             if self._running:
                 await self._on_timer()
 
@@ -248,13 +242,20 @@ class CronService:
             if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
         ]
 
-        for job in due_jobs:
-            # Fixed #27: Parallel execution
-            asyncio.create_task(self._execute_job(job))
+        async def _run_and_save(job: CronJob) -> None:
+            try:
+                await self._execute_job(job)
+            finally:
+                self._save_store()
+                self._arm_timer()
 
-        # Fixed #12: Re-arm timer immediately, don't wait for jobs to finish
-        self._save_store()
-        self._arm_timer()
+        for job in due_jobs:
+            # Prevent re-triggering while running
+            job.state.next_run_at_ms = None
+            asyncio.create_task(_run_and_save(job))
+
+        if not due_jobs:
+            self._arm_timer()
 
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a single job."""

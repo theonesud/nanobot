@@ -1,11 +1,11 @@
 """Tests for channels (base classes and implementations)."""
 
-import pytest
-from abc import ABC
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from nanobot.channels.base import BaseChannel
+import pytest
+
 from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import SlackConfig
 
 
@@ -15,7 +15,7 @@ class TestChannelConfig:
     def test_config_creation(self):
         """Test creating a channel config."""
         config = SlackConfig(enabled=True)
-        assert config.enabled == True
+        assert config.enabled
 
 
 class TestMessage:
@@ -128,5 +128,5 @@ class TestChannel:
         config = SlackConfig()
         channel = TestChannel(config, MagicMock())
         msg = OutboundMessage(content="Test", channel="test", chat_id="123")
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             await channel.send(msg)

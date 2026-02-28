@@ -220,6 +220,8 @@ class AgentDefaults(Base):
     workspace: str = "~/.nanobot/workspace"
     model: str = "opencode-default"
     provider: str = "opencode"
+    auditor_model: str = "opencode-default"
+    auditor_provider: str = "opencode"
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40

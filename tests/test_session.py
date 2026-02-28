@@ -1,9 +1,6 @@
 """Tests for session/manager.py — Session and SessionManager."""
 
-import json
 import pytest
-from datetime import datetime
-from pathlib import Path
 
 from nanobot.session.manager import Session, SessionManager
 
@@ -90,7 +87,7 @@ class TestSessionManager:
         return SessionManager(temp_workspace)
 
     def test_creates_session_dir(self, temp_workspace):
-        mgr = SessionManager(temp_workspace)
+        SessionManager(temp_workspace)
         assert (temp_workspace / "sessions").exists()
 
     def test_get_or_create_new_session(self, manager):

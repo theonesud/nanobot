@@ -151,17 +151,21 @@ def main(
     pass
 
 
-
-
-def _make_provider(config: Config):
+def _make_provider(
+    config: Config, override_provider_name: str | None = None, override_model: str | None = None
+):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
 
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
+    model = override_model or config.agents.defaults.model
+    provider_name = override_provider_name or config.get_provider_name(model)
+    p = (
+        config.get_provider(model)
+        if not override_provider_name
+        else config.providers.get(override_provider_name)
+    )
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
@@ -238,6 +242,16 @@ def gateway(
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
 
+    # Create auditor
+    from nanobot.agent.auditor import CommandAuditor
+
+    auditor_provider = _make_provider(
+        config,
+        override_provider_name=config.agents.defaults.auditor_provider,
+        override_model=config.agents.defaults.auditor_model,
+    )
+    auditor = CommandAuditor(provider=auditor_provider, model=config.agents.defaults.auditor_model)
+
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
@@ -255,6 +269,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        auditor=auditor,
     )
 
     # Set cron callback (needs agent)
@@ -435,6 +450,16 @@ def agent(
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
 
+    # Create auditor
+    from nanobot.agent.auditor import CommandAuditor
+
+    auditor_provider = _make_provider(
+        config,
+        override_provider_name=config.agents.defaults.auditor_provider,
+        override_model=config.agents.defaults.auditor_model,
+    )
+    auditor = CommandAuditor(provider=auditor_provider, model=config.agents.defaults.auditor_model)
+
     if logs:
         logger.enable("nanobot")
     else:
@@ -455,6 +480,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        auditor=auditor,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -708,7 +734,7 @@ def _get_bridge_dir() -> Path:
         console.print(f"[red]Build failed: {e}[/red]")
         if e.stderr:
             console.print(f"[dim]{e.stderr.decode()[:500]}[/dim]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     return user_bridge
 
@@ -1078,7 +1104,7 @@ def _login_openai_codex() -> None:
         )
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @_register_login("github_copilot")
@@ -1101,7 +1127,7 @@ def _login_github_copilot() -> None:
         console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
     except Exception as e:
         console.print(f"[red]Authentication error: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 if __name__ == "__main__":

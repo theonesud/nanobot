@@ -65,6 +65,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        auditor: "CommandAuditor | None" = None,
     ):
         from nanobot.config.schema import ExecToolConfig
 
@@ -107,7 +108,7 @@ class AgentLoop:
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._processing_locks: dict[str, asyncio.Lock] = {}
-        self.auditor = CommandAuditor(bin_path="opencode")
+        self.auditor = auditor
         self.db = Database(workspace)
         self.daily_budget = 5.0  # Default $5.00 daily budget
 
@@ -215,28 +216,28 @@ class AgentLoop:
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
-    def _get_model_pricing(self, model: str) -> float:
-        """Get cost per 1M tokens for the given model. Defaults to $5.00."""
+    def _get_model_pricing(self, model: str) -> tuple[float, float]:
+        """Get cost per 1M tokens (input, output) for the given model."""
         m = model.lower()
         if "opus" in m:
-            return 15.0
+            return 15.0, 75.0
         if "sonnet" in m:
-            return 3.0
+            return 3.0, 15.0
         if "haiku" in m:
-            return 0.25
+            return 0.25, 1.25
         if "gpt-4o" in m:
-            return 5.0
+            return 2.5, 10.0
         if "gpt-4-turbo" in m:
-            return 10.0
+            return 10.0, 30.0
         if "gpt-3.5" in m:
-            return 0.5
+            return 0.5, 1.5
         if "deepseek" in m:
-            return 0.27
+            return 0.27, 1.10
         if "gemini-1.5-pro" in m:
-            return 3.5
+            return 1.25, 5.0
         if "gemini-1.5-flash" in m:
-            return 0.075
-        return 5.0
+            return 0.075, 0.30
+        return 5.0, 15.0
 
     def _save_session_safe(self, session: Session) -> None:
         """Atomic session save wrapper. Fixed #25."""
@@ -275,9 +276,9 @@ class AgentLoop:
             if response.usage:
                 p_tokens = response.usage.get("prompt_tokens", 0)
                 c_tokens = response.usage.get("completion_tokens", 0)
-                # Model-specific pricing
-                rate = self._get_model_pricing(self.model)
-                cost = (p_tokens + c_tokens) / 1_000_000.0 * rate
+                # Model-specific pricing (separate input/output rates)
+                input_rate, output_rate = self._get_model_pricing(self.model)
+                cost = p_tokens / 1_000_000.0 * input_rate + c_tokens / 1_000_000.0 * output_rate
                 self.db.log_cost(
                     session_key,
                     self.provider.__class__.__name__,
@@ -325,19 +326,18 @@ class AgentLoop:
                     reasoning_content=response.reasoning_content,
                 )
 
-                for tool_call in response.tool_calls:
-                    tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    # Fixed: Extract channel/chat_id from the context instead of index 0
-                    metadata = initial_messages[0].get("_nanobot_metadata", {})
-                    channel = metadata.get("channel")
-                    chat_id = metadata.get("chat_id")
-                    thread_ts = metadata.get("thread_ts")
+                metadata = initial_messages[0].get("_nanobot_metadata", {})
+                channel = metadata.get("channel")
+                chat_id = metadata.get("chat_id")
+                thread_ts = metadata.get("thread_ts")
 
+                async def _execute_tool(tc: Any) -> tuple[str, str, str]:
+                    tools_used.append(tc.name)
+                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                    logger.info("Tool call: {}({})", tc.name, args_str[:200])
                     result = await self.tools.execute(
-                        tool_call.name,
-                        tool_call.arguments,
+                        tc.name,
+                        tc.arguments,
                         channel=channel,
                         chat_id=chat_id,
                         metadata={"slack": {"thread_ts": thread_ts}},
@@ -345,16 +345,12 @@ class AgentLoop:
                             OutboundMessage(channel=channel, chat_id=chat_id, content=content)
                         ),
                     )
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
-                    # Track that a tool was used in this turn
-                    # The original code had `if len(messages) > skip:`, but `skip` is not defined here.
-                    # Assuming it meant to track for the last added message.
-                    if messages:
-                        messages[-1]["tools_used"] = messages[-1].get("tools_used", []) + [
-                            tool_call.name
-                        ]
+                    return tc.id, tc.name, str(result)
+
+                results = await asyncio.gather(*[_execute_tool(tc) for tc in response.tool_calls])
+
+                for tc_id, tc_name, tc_result in results:
+                    messages = self.context.add_tool_result(messages, tc_id, tc_name, tc_result)
             else:
                 clean = self._strip_think(response.content)
                 messages = self.context.add_assistant_message(
@@ -371,6 +367,7 @@ class AgentLoop:
                 f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
                 "without completing the task. You can try breaking the task into smaller steps."
             )
+            messages = self.context.add_assistant_message(messages, final_content)
 
         return final_content, tools_used, messages
 
@@ -391,13 +388,13 @@ class AgentLoop:
             else:
                 task = asyncio.create_task(self._dispatch(msg))
                 self._active_tasks.setdefault(msg.session_key, []).append(task)
-                task.add_done_callback(
-                    lambda t, k=msg.session_key: (
-                        self._active_tasks.get(k, []) and self._active_tasks[k].remove(t)
-                        if t in self._active_tasks.get(k, [])
-                        else None
-                    )
-                )
+
+                def _task_done(t: asyncio.Task, *, key: str = msg.session_key) -> None:
+                    tasks = self._active_tasks.get(key)
+                    if tasks and t in tasks:
+                        tasks.remove(t)
+
+                task.add_done_callback(_task_done)
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
@@ -557,8 +554,6 @@ class AgentLoop:
                 )
             finally:
                 self._consolidating.discard(session.key)
-                if not lock.locked():
-                    self._consolidation_locks.pop(session.key, None)
 
             session.clear()
             self.sessions.save(session)
@@ -594,8 +589,6 @@ class AgentLoop:
                             logger.error("Error during memory consolidation: {}", e)
                 finally:
                     self._consolidating.discard(session.key)
-                    if not lock.locked():
-                        self._consolidation_locks.pop(session.key, None)
                     _task = asyncio.current_task()
                     if _task is not None:
                         self._consolidation_tasks.discard(_task)

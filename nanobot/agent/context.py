@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger as _log
+
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
@@ -109,11 +111,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                     content = file_path.read_text(encoding="utf-8")
                     parts.append(f"## {filename}\n\n{content}")
                 except Exception as e:
-                    import logging
-
-                    logging.getLogger("nanobot").warning(
-                        f"Failed to load bootstrap file {filename}: {e}"
-                    )
+                    _log.warning("Failed to load bootstrap file {}: {}", filename, e)
 
         return "\n\n".join(parts) if parts else ""
 

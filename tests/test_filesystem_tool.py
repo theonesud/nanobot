@@ -1,13 +1,12 @@
 """Comprehensive tests for filesystem tools (read_file, write_file, edit_file, list_dir)."""
 
 import pytest
-from pathlib import Path
 
 from nanobot.agent.tools.filesystem import (
-    ReadFileTool,
-    WriteFileTool,
     EditFileTool,
     ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
     _resolve_path,
 )
 
@@ -30,7 +29,6 @@ class TestResolvePath:
         assert result == tmp_path.resolve()
 
     def test_allowed_dir_outside_raises(self, tmp_path):
-        other = tmp_path.parent
         with pytest.raises(PermissionError, match="outside allowed directory"):
             _resolve_path("/etc/passwd", allowed_dir=tmp_path)
 

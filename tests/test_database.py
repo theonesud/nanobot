@@ -1,7 +1,6 @@
 """Tests for utils/database.py."""
 
 import sqlite3
-import time
 
 import pytest
 

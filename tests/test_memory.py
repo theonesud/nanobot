@@ -1,7 +1,8 @@
 """Tests for agent/memory.py."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from nanobot.agent.memory import MemoryStore
 

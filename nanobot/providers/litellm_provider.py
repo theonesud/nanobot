@@ -8,6 +8,7 @@ from typing import Any
 import json_repair
 import litellm
 from litellm import acompletion
+from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
@@ -163,7 +164,7 @@ class LiteLLMProvider(LLMProvider):
         for spec in PROVIDERS:
             # Match based on explicit provider name or keywords
             if spec.name == provider_name or any(k in provider_name for k in spec.keywords):
-                for pattern, overrides in spec.model_overrides.items():
+                for pattern, overrides in spec.model_overrides:
                     if pattern in model_name:
                         kwargs.update(overrides)
                         logger.debug("Applied model overrides for {}: {}", model, overrides)
@@ -211,14 +212,17 @@ class LiteLLMProvider(LLMProvider):
 
         # Clamp max_tokens to at least 1 — negative or zero values cause
         # LiteLLM to reject the request with "max_tokens must be at least 1".
-        max_tokens = max(1, max_tokens)
+        if max_tokens is not None:
+            max_tokens = max(1, max_tokens)
 
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
-            "max_tokens": max_tokens,
             "temperature": temperature,
         }
+
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
 
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
         self._apply_model_overrides(model, kwargs)

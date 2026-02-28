@@ -71,17 +71,10 @@ class OpenCodeProvider(LLMProvider):
         full_prompt += "\n\n<SYSTEM>\nPlease respond to the last <USER> message.</SYSTEM>"
 
         if tools:
-            # Fixed #11: Inform OpenCode about available tools in the system context
-            tool_summary = "\n".join(
-                [
-                    f"- {t['function']['name']}: {t['function'].get('description', '')}"
-                    for t in tools
-                ]
-            )
-            full_prompt = (
-                f"<SYSTEM>\nYou can use these Nanobot tools if needed:\n{tool_summary}\n</SYSTEM>\n\n"
-                + full_prompt
-            )
+            # OpenCode acts as its own autonomous agent and executes internal tools.
+            # It cannot yield execution back to Nanobot for Nanobot-specific tools,
+            # so we ignore the injected tools to avoid confusing the CLI system.
+            logger.debug("OpenCodeProvider ignores Nanobot tools.")
 
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
 

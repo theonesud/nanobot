@@ -73,13 +73,14 @@ class ExecTool(Tool):
 
         # Phase 2: OpenCode Auditor check
         if self.auditor:
-            from loguru import logger
             import uuid
 
-            logger.info(f"Auditing command: {command}")
+            from loguru import logger
+
+            logger.info("Auditing command: {}", command)
             verdict = await self.auditor.evaluate(command)
             if verdict == "UNSAFE":
-                logger.warning(f"Auditor flagged command as UNSAFE: {command}")
+                logger.warning("Auditor flagged command as UNSAFE: {}", command)
                 if self.bus:
                     from nanobot.bus.events import ApprovalRequest
 

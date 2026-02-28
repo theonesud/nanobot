@@ -1,11 +1,12 @@
 """Tests for agent/tools/registry.py — ToolRegistry."""
 
-import pytest
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-from nanobot.agent.tools.registry import ToolRegistry
+import pytest
+
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.registry import ToolRegistry
 
 
 def _make_tool(name: str, description: str = "A tool.", params_required: list[str] | None = None):

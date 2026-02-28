@@ -2,7 +2,6 @@
 
 import asyncio
 import subprocess
-from datetime import datetime, timedelta
 
 from loguru import logger
 
@@ -67,22 +66,7 @@ async def nightly_soul_update(agent: AgentLoop):
         return
 
     try:
-        # Read HISTORY.md for the last 24 hours
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        logs = []
-        with open(history_file, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith(f"[{yesterday}"):
-                    logs.append(line)
-                    # Read subsequent lines until next entry
-                    for next_line in f:
-                        if next_line.startswith("["):
-                            # This is a bit complex since we already consumed it.
-                            # Just read the whole file if it's not too big.
-                            break
-                        logs.append(next_line)
-
-        # Simpler approach: read last 100 lines for now
+        # Read recent history entries for summarization
         with open(history_file, "r", encoding="utf-8") as f:
             all_logs = f.readlines()
             logs = all_logs[-500:]  # Last 500 lines

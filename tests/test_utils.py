@@ -1,15 +1,13 @@
 """Tests for utils/helpers.py."""
 
-import pytest
 from pathlib import Path
 
 from nanobot.utils.helpers import (
     ensure_dir,
-    get_data_path,
     get_workspace_path,
-    timestamp,
     safe_filename,
     sync_workspace_templates,
+    timestamp,
 )
 
 
@@ -90,7 +88,7 @@ class TestGetWorkspacePath:
 
 class TestSyncWorkspaceTemplates:
     def test_creates_memory_file(self, tmp_path):
-        result = sync_workspace_templates(tmp_path, silent=True)
+        sync_workspace_templates(tmp_path, silent=True)
         memory_file = tmp_path / "memory" / "MEMORY.md"
         history_file = tmp_path / "memory" / "HISTORY.md"
         assert memory_file.exists() or history_file.exists()

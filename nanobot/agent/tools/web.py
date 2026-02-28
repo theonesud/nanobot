@@ -1,6 +1,7 @@
-"""Web tools: web_search and web_fetch."""
+"""Web tools for search and content fetching."""
 
 import html
+import ipaddress
 import json
 import os
 import re
@@ -31,13 +32,23 @@ def _normalize(text: str) -> str:
 
 
 def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL: must be http(s) with valid domain."""
+    """Validate a URL for fetching."""
     try:
-        p = urlparse(url)
-        if p.scheme not in ("http", "https"):
-            return False, f"Only http/https allowed, got '{p.scheme or 'none'}'"
-        if not p.netloc:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Only http/https URLs allowed, got '{parsed.scheme or 'none'}'"
+        if not parsed.netloc:
             return False, "Missing domain"
+        # SSRF protection: block private/reserved IPs
+        hostname = parsed.hostname or ""
+        if hostname.lower() in ("localhost", ""):
+            return False, "Localhost URLs not allowed"
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False, f"Private/reserved IP addresses not allowed: {hostname}"
+        except ValueError:
+            pass  # hostname is a domain name, not an IP — that's fine
         return True, ""
     except Exception as e:
         return False, str(e)

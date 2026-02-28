@@ -1,7 +1,6 @@
 """Tests for providers."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 

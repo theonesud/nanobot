@@ -1,10 +1,11 @@
 """Test session management with cache-friendly message handling."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pathlib import Path
+
 from nanobot.session.manager import Session, SessionManager
 
 # Test constants
@@ -786,10 +787,10 @@ class TestConsolidationDeduplicationGuard:
         )
 
     @pytest.mark.asyncio
-    async def test_new_cleans_up_consolidation_lock_for_invalidated_session(
+    async def test_new_leaves_consolidation_lock_unlocked_for_invalidated_session(
         self, tmp_path: Path
     ) -> None:
-        """/new should remove lock entry for fully invalidated session key."""
+        """/new should leave lock in unlocked state for invalidated session key."""
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
@@ -825,4 +826,6 @@ class TestConsolidationDeduplicationGuard:
 
         assert response is not None
         assert "new session started" in response.content.lower()
-        assert session.key not in loop._consolidation_locks
+        # Lock is kept (lightweight) but must be unlocked after /new completes
+        lock = loop._consolidation_locks.get(session.key)
+        assert lock is not None and not lock.locked()

@@ -66,13 +66,13 @@ class NanobotDingTalkHandler(CallbackHandler):
             sender_id = chatbot_msg.sender_staff_id or chatbot_msg.sender_id
             sender_name = chatbot_msg.sender_nick or "Unknown"
 
-            logger.info("Received DingTalk message from {} ({}): {}", sender_name, sender_id, content)
+            logger.info(
+                "Received DingTalk message from {} ({}): {}", sender_name, sender_id, content
+            )
 
             # Forward to Nanobot via _on_message (non-blocking).
             # Store reference to prevent GC before task completes.
-            task = asyncio.create_task(
-                self.channel._on_message(content, sender_id, sender_name)
-            )
+            task = asyncio.create_task(self.channel._on_message(content, sender_id, sender_name))
             self.channel._background_tasks.add(task)
             task.add_done_callback(self.channel._background_tasks.discard)
 
@@ -114,9 +114,7 @@ class DingTalkChannel(BaseChannel):
         """Start the DingTalk bot with Stream Mode."""
         try:
             if not DINGTALK_AVAILABLE:
-                logger.error(
-                    "DingTalk Stream SDK not installed. Run: pip install dingtalk-stream"
-                )
+                logger.error("DingTalk Stream SDK not installed. Run: pip install dingtalk-stream")
                 return
 
             if not self.config.client_id or not self.config.client_secret:
@@ -207,10 +205,13 @@ class DingTalkChannel(BaseChannel):
             "robotCode": self.config.client_id,
             "userIds": [msg.chat_id],  # chat_id is the user's staffId
             "msgKey": "sampleMarkdown",
-            "msgParam": json.dumps({
-                "text": msg.content,
-                "title": "Nanobot Reply",
-            }, ensure_ascii=False),
+            "msgParam": json.dumps(
+                {
+                    "text": msg.content,
+                    "title": "Nanobot Reply",
+                },
+                ensure_ascii=False,
+            ),
         }
 
         if not self._http:

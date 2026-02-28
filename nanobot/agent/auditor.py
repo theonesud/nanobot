@@ -1,20 +1,21 @@
 """Auditor for security evaluation of shell commands."""
 
-import asyncio
-import json
 from typing import Literal
 
 from loguru import logger
 
+from nanobot.providers.base import LLMProvider
+
 
 class CommandAuditor:
     """
-    The Auditor is a secondary OpenCode subprocess that evaluates
+    The Auditor is a secondary LLM pipeline that evaluates
     shell commands for destructive actions.
     """
 
-    def __init__(self, bin_path: str = "opencode"):
-        self.bin_path = bin_path
+    def __init__(self, provider: LLMProvider, model: str):
+        self.provider = provider
+        self.model = model
         self.system_prompt = (
             "You are a strict security auditor. Your ONLY job is to evaluate if a shell command "
             "is SAFE or UNSAFE to execute on the host system. "
@@ -24,52 +25,22 @@ class CommandAuditor:
 
     async def evaluate(self, command: str) -> Literal["SAFE", "UNSAFE"]:
         """
-        Evaluate a command using a secondary OpenCode instance.
+        Evaluate a command using the fast auditor LLM provider.
         """
         prompt = f"Evaluate this command for destructive actions: {command}\nReply SAFE or UNSAFE."
 
-        args = [
-            self.bin_path,
-            "run",
-            "--message",
-            prompt,
-            "--system-prompt",
-            self.system_prompt,
-            "--format",
-            "json",
-        ]
-
         try:
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            response = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                model=self.model,
+                max_tokens=10,
+                temperature=0.0,
             )
 
-            full_content = []
-
-            async def consume_stderr():
-                if process.stderr:
-                    async for _ in process.stderr:
-                        pass
-
-            stderr_task = asyncio.create_task(consume_stderr())
-
-            if process.stdout:
-                async for line in process.stdout:
-                    if not line:
-                        break
-                    try:
-                        event = json.loads(line.decode().strip())
-                        if event.get("type") == "text":
-                            full_content.append(event["part"]["text"])
-                    except Exception as e:
-                        logger.debug(f"Auditor: failed to parse line: {e}")
-
-            await process.wait()
-            await stderr_task
-
-            result = "".join(full_content).strip().upper()
+            result = (response.content or "").strip().upper()
 
             # Use strict matching for SAFE, default to UNSAFE if ambiguous
             if "SAFE" in result and "UNSAFE" not in result:

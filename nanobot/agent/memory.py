@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from nanobot.utils.helpers import ensure_dir
-
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
     from nanobot.session.manager import Session
@@ -104,6 +102,15 @@ class MemoryStore:
                 continue
             # Fixed #6: Handle empty content gracefully when tools are present
             content_str = m.get("content") or ("(action)" if m.get("tool_calls") else "")
+
+            if isinstance(content_str, str) and len(content_str) > 4000:
+                half = 2000
+                content_str = (
+                    content_str[:half]
+                    + f"\n... [{len(content_str) - 4000} chars truncated] ...\n"
+                    + content_str[-half:]
+                )
+
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
             lines.append(
                 f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {content_str}"

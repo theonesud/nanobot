@@ -1,8 +1,8 @@
 """Tests for heartbeat service."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-import asyncio
 
 from nanobot.heartbeat.service import HeartbeatService
 

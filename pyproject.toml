@@ -100,7 +100,7 @@ target-version = "py311"
 select = ["E", "W", "F", "I", "C", "B"]
 ignore = ["E501"]
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["nanobot", "bridge", "tests", "case"]
 
 [tool.pytest.ini_options]

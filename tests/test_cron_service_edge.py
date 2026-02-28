@@ -1,12 +1,11 @@
 """Tests for cron/service.py — CronService public API edge cases."""
 
-import asyncio
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
 from nanobot.cron.service import CronService, _compute_next_run, _validate_schedule_for_add
-from nanobot.cron.types import CronJob, CronSchedule, CronPayload, CronJobState, CronStore
+from nanobot.cron.types import CronSchedule
 
 
 class TestComputeNextRun:

@@ -1,10 +1,8 @@
 """Comprehensive tests for the ExecTool (shell.py)."""
 
-import asyncio
-import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 from nanobot.agent.tools.shell import ExecTool
 

@@ -1,7 +1,8 @@
 """Tests for agent/tools/base.py — Tool base class."""
 
-import pytest
 from typing import Any
+
+import pytest
 
 from nanobot.agent.tools.base import Tool
 

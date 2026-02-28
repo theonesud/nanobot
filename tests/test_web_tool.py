@@ -1,14 +1,15 @@
 """Comprehensive tests for web tools (web_search and web_fetch)."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from nanobot.agent.tools.web import (
-    WebSearchTool,
     WebFetchTool,
-    _strip_tags,
+    WebSearchTool,
     _normalize,
+    _strip_tags,
     _validate_url,
 )
 

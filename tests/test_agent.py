@@ -1,8 +1,8 @@
 """Tests for agent components - auditor, context, tools."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
 
 from nanobot.agent.auditor import CommandAuditor
 from nanobot.agent.context import ContextBuilder
@@ -14,11 +14,13 @@ class TestAuditor:
     @pytest.fixture
     def auditor(self):
         """Create an auditor instance."""
-        return CommandAuditor(bin_path="opencode")
+
+        provider = MagicMock()
+        return CommandAuditor(provider=provider, model="opencode")
 
     def test_auditor_initialization(self, auditor):
         """Test auditor initializes correctly."""
-        assert auditor.bin_path == "opencode"
+        assert auditor.model == "opencode"
 
     @pytest.mark.asyncio
     async def test_audit_request(self, auditor):

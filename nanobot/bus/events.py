@@ -38,13 +38,14 @@ class OutboundMessage:
 
 @dataclass
 class ApprovalRequest:
-    """Request for user approval of a command."""
+    """Request for user approval of an action."""
 
     id: str
     channel: str
     chat_id: str
-    command: str
-    reason: str = ""
+    type: str = "shell"
+    title: str = ""
+    content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -55,4 +56,5 @@ class ApprovalResponse:
     id: str
     approved: bool
     responder_id: str
+    reason: str = ""
     timestamp: datetime = field(default_factory=datetime.now)

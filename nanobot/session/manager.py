@@ -1,5 +1,6 @@
 """Session management for conversation history."""
 
+import collections
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -74,11 +75,12 @@ class SessionManager:
     Sessions are stored as JSONL files in the sessions directory.
     """
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, max_cache_size: int = 100):
         self.workspace = workspace
         self.sessions_dir = ensure_dir(self.workspace / "sessions")
         self.legacy_sessions_dir = Path.home() / ".nanobot" / "sessions"
-        self._cache: dict[str, Session] = {}
+        self._cache: collections.OrderedDict[str, Session] = collections.OrderedDict()
+        self.max_cache_size = max_cache_size
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
@@ -101,6 +103,7 @@ class SessionManager:
             The session.
         """
         if key in self._cache:
+            self._cache.move_to_end(key)
             return self._cache[key]
 
         session = self._load(key)
@@ -108,6 +111,8 @@ class SessionManager:
             session = Session(key=key)
 
         self._cache[key] = session
+        if len(self._cache) > self.max_cache_size:
+            self._cache.popitem(last=False)
         return session
 
     def _load(self, key: str) -> Session | None:
@@ -198,6 +203,9 @@ class SessionManager:
             raise
 
         self._cache[session.key] = session
+        self._cache.move_to_end(session.key)
+        if len(self._cache) > self.max_cache_size:
+            self._cache.popitem(last=False)
 
     def invalidate(self, key: str) -> None:
         """Remove a session from the in-memory cache."""

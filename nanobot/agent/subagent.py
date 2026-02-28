@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,7 @@ class SubagentManager:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        auditor: "CommandAuditor | None" = None,
     ):
         from nanobot.config.schema import ExecToolConfig
 
@@ -48,7 +50,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         from nanobot.agent.auditor import CommandAuditor
 
-        self._auditor = CommandAuditor(bin_path="opencode")
+        self._auditor = auditor or CommandAuditor(provider=self.provider, model=self.model)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
         self.max_iterations = 15
@@ -227,11 +229,10 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
 
     def _build_subagent_prompt(self, task: str) -> str:
         """Build a focused system prompt for the subagent."""
-        import time as _time
         from datetime import datetime
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = _time.strftime("%Z") or "UTC"
+        tz = time.strftime("%Z") or "UTC"
 
         return f"""# Subagent
 
