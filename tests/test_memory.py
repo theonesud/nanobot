@@ -16,9 +16,9 @@ class TestMemoryStore:
 
     def test_initialization(self, memory_store, temp_workspace):
         """Test memory store initializes correctly."""
-        assert memory_store.memory_dir == temp_workspace / "memory"
-        assert memory_store.memory_file == temp_workspace / "memory" / "MEMORY.md"
-        assert memory_store.history_file == temp_workspace / "memory" / "HISTORY.md"
+        assert memory_store.memory_path.parent == temp_workspace / "memory"
+        assert memory_store.memory_path == temp_workspace / "memory" / "MEMORY.md"
+        assert memory_store.history_path == temp_workspace / "memory" / "HISTORY.md"
 
     def test_read_long_term_empty(self, memory_store):
         """Test reading long-term memory when empty."""
@@ -35,14 +35,14 @@ class TestMemoryStore:
         """Test writing long-term memory."""
         content = "# Test Memory\nTest content"
         memory_store.write_long_term(content)
-        assert memory_store.memory_file.read_text() == content
+        assert memory_store.memory_path.read_text() == content
 
     def test_append_history(self, memory_store):
         """Test appending to history."""
         entry = "[2026-02-28 14:00] USER: Hello, world!"
         memory_store.append_history(entry)
 
-        history_content = memory_store.history_file.read_text()
+        history_content = memory_store.history_path.read_text()
         assert entry in history_content
 
     def test_append_history_multiple(self, memory_store):
@@ -54,7 +54,7 @@ class TestMemoryStore:
         for entry in entries:
             memory_store.append_history(entry)
 
-        history = memory_store.history_file.read_text()
+        history = memory_store.history_path.read_text()
         assert "USER: Hello" in history
         assert "ASSISTANT: Hi there!" in history
 
@@ -91,7 +91,12 @@ class TestMemoryStore:
         """Test successful memory consolidation."""
         # Setup many messages to trigger consolidation
         mock_session.messages = [
-            {"role": "user", "content": f"Message {i}", "timestamp": f"2026-02-28T10:{i:02d}:00", "tools_used": []}
+            {
+                "role": "user",
+                "content": f"Message {i}",
+                "timestamp": f"2026-02-28T10:{i:02d}:00",
+                "tools_used": [],
+            }
             for i in range(60)
         ]
         mock_session.last_consolidated = 10
@@ -111,14 +116,19 @@ class TestMemoryStore:
 
         result = await memory_store.consolidate(mock_session, mock_provider, "gpt-4")
         assert result is True
-        assert "User exchanged messages" in memory_store.history_file.read_text()
-        assert "User is active" in memory_store.memory_file.read_text()
+        assert "User exchanged messages" in memory_store.history_path.read_text()
+        assert "User is active" in memory_store.memory_path.read_text()
 
     @pytest.mark.asyncio
     async def test_consolidate_no_tool_call(self, memory_store, mock_session, mock_provider):
         """Test consolidation when LLM doesn't call save_memory."""
         mock_session.messages = [
-            {"role": "user", "content": f"Message {i}", "timestamp": f"2026-02-28T10:{i:02d}:00", "tools_used": []}
+            {
+                "role": "user",
+                "content": f"Message {i}",
+                "timestamp": f"2026-02-28T10:{i:02d}:00",
+                "tools_used": [],
+            }
             for i in range(60)
         ]
 
@@ -133,7 +143,12 @@ class TestMemoryStore:
     async def test_consolidate_exception(self, memory_store, mock_session, mock_provider):
         """Test consolidation handles exceptions."""
         mock_session.messages = [
-            {"role": "user", "content": f"Message {i}", "timestamp": f"2026-02-28T10:{i:02d}:00", "tools_used": []}
+            {
+                "role": "user",
+                "content": f"Message {i}",
+                "timestamp": f"2026-02-28T10:{i:02d}:00",
+                "tools_used": [],
+            }
             for i in range(60)
         ]
         mock_provider.chat = AsyncMock(side_effect=Exception("API Error"))
@@ -145,8 +160,18 @@ class TestMemoryStore:
     async def test_consolidate_archive_all(self, memory_store, mock_session, mock_provider):
         """Test archive_all flag."""
         mock_session.messages = [
-            {"role": "user", "content": "Message 1", "timestamp": "2026-02-28T10:00:00", "tools_used": ["read"]},
-            {"role": "assistant", "content": "Response 1", "timestamp": "2026-02-28T10:00:01", "tools_used": []},
+            {
+                "role": "user",
+                "content": "Message 1",
+                "timestamp": "2026-02-28T10:00:00",
+                "tools_used": ["read"],
+            },
+            {
+                "role": "assistant",
+                "content": "Response 1",
+                "timestamp": "2026-02-28T10:00:01",
+                "tools_used": [],
+            },
         ]
 
         mock_response = MagicMock()
@@ -161,5 +186,7 @@ class TestMemoryStore:
         ]
         mock_provider.chat = AsyncMock(return_value=mock_response)
 
-        result = await memory_store.consolidate(mock_session, mock_provider, "gpt-4", archive_all=True)
+        result = await memory_store.consolidate(
+            mock_session, mock_provider, "gpt-4", archive_all=True
+        )
         assert result is True

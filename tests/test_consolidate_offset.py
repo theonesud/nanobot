@@ -509,12 +509,12 @@ class TestConsolidationDeduplicationGuard:
 
         consolidation_calls = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> None:
+        async def _fake_consolidate(_session, *args, **kwargs) -> None:
             nonlocal consolidation_calls
             consolidation_calls += 1
             await asyncio.sleep(0.05)
 
-        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
@@ -555,7 +555,7 @@ class TestConsolidationDeduplicationGuard:
         active = 0
         max_active = 0
 
-        async def _fake_consolidate(_session, archive_all: bool = False) -> None:
+        async def _fake_consolidate(_session, *args, **kwargs) -> None:
             nonlocal consolidation_calls, active, max_active
             consolidation_calls += 1
             active += 1
@@ -563,7 +563,7 @@ class TestConsolidationDeduplicationGuard:
             await asyncio.sleep(0.05)
             active -= 1
 
-        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
@@ -605,11 +605,11 @@ class TestConsolidationDeduplicationGuard:
 
         started = asyncio.Event()
 
-        async def _slow_consolidate(_session, archive_all: bool = False) -> None:
+        async def _slow_consolidate(_session, *args, **kwargs) -> None:
             started.set()
             await asyncio.sleep(0.1)
 
-        loop._consolidate_memory = _slow_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _slow_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
@@ -652,7 +652,7 @@ class TestConsolidationDeduplicationGuard:
         release = asyncio.Event()
         archived_count = 0
 
-        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(sess, *args, archive_all: bool = False, **kwargs) -> bool:
             nonlocal archived_count
             if archive_all:
                 archived_count = len(sess.messages)
@@ -661,7 +661,7 @@ class TestConsolidationDeduplicationGuard:
             await release.wait()
             return True
 
-        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
@@ -707,12 +707,12 @@ class TestConsolidationDeduplicationGuard:
         loop.sessions.save(session)
         before_count = len(session.messages)
 
-        async def _failing_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _failing_consolidate(sess, *args, archive_all: bool = False, **kwargs) -> bool:
             if archive_all:
                 return False
             return True
 
-        loop._consolidate_memory = _failing_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _failing_consolidate  # type: ignore[method-assign]
 
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         response = await loop._process_message(new_msg)
@@ -754,7 +754,7 @@ class TestConsolidationDeduplicationGuard:
         release = asyncio.Event()
         archived_count = -1
 
-        async def _fake_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _fake_consolidate(sess, *args, archive_all: bool = False, **kwargs) -> bool:
             nonlocal archived_count
             if archive_all:
                 archived_count = len(sess.messages)
@@ -765,7 +765,7 @@ class TestConsolidationDeduplicationGuard:
             sess.last_consolidated = len(sess.messages) - 3
             return True
 
-        loop._consolidate_memory = _fake_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _fake_consolidate  # type: ignore[method-assign]
 
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         await loop._process_message(msg)
@@ -815,10 +815,10 @@ class TestConsolidationDeduplicationGuard:
         loop._consolidation_locks.setdefault(session.key, asyncio.Lock())
         assert session.key in loop._consolidation_locks
 
-        async def _ok_consolidate(sess, archive_all: bool = False) -> bool:
+        async def _ok_consolidate(sess, *args, archive_all: bool = False, **kwargs) -> bool:
             return True
 
-        loop._consolidate_memory = _ok_consolidate  # type: ignore[method-assign]
+        loop.context.memory.consolidate = _ok_consolidate  # type: ignore[method-assign]
 
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         response = await loop._process_message(new_msg)

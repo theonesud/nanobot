@@ -540,7 +540,9 @@ class AgentLoop:
                     if snapshot:
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
-                        if not await self.memory.consolidate(temp, archive_all=True):
+                        if not await self.context.memory.consolidate(
+                            temp, self.provider, self.model, archive_all=True
+                        ):
                             return OutboundMessage(
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
@@ -580,7 +582,7 @@ class AgentLoop:
                 try:
                     async with lock:
                         try:
-                            await self.memory.consolidate(
+                            await self.context.memory.consolidate(
                                 session,
                                 self.provider,
                                 self.model,

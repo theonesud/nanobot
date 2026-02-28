@@ -176,10 +176,9 @@ class ExecTool(Tool):
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
-        # Fixed #20: Match as full words to allow 'mysudo.sh'
         lower = cmd.lower()
         for pattern in self.deny_patterns:
-            if re.search(rf"\b{pattern}\b", lower):
+            if re.search(pattern, lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
 
         if self.allow_patterns:
