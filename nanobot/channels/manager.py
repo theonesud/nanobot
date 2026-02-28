@@ -222,6 +222,9 @@ class ChannelManager:
                 continue
             except asyncio.CancelledError:
                 break
+            except Exception as e:
+                logger.error("Critical error in outbound dispatcher: {}", e)
+                await asyncio.sleep(5)  # Back-off before retry
 
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""

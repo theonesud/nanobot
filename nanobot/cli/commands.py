@@ -526,9 +526,8 @@ def agent(
             cli_channel, cli_chat_id = "cli", session_id
 
         def _exit_on_sigint(signum, frame):
-            _restore_terminal()
-            console.print("\nGoodbye!")
-            os._exit(0)
+            # Let the exception bubble up to the try/except block instead of hard exit
+            raise KeyboardInterrupt
 
         signal.signal(signal.SIGINT, _exit_on_sigint)
 

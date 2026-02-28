@@ -541,14 +541,19 @@ class AgentLoop:
                 try:
                     async with lock:
                         try:
-                            await self.context.memory.consolidate(
+                            if await self.context.memory.consolidate(
                                 session,
                                 self.provider,
                                 self.model,
                                 memory_window=self.memory_window,
-                            )
-                            # Fixed #8: Session.last_consolidated is updated inside consolidate()
-                            self._save_session_safe(session)
+                            ):
+                                # Fixed #8: Session.last_consolidated is updated inside consolidate()
+                                latest_session = self.sessions.get_or_create(session.key)
+                                if latest_session is not session:
+                                    latest_session.last_consolidated = max(
+                                        latest_session.last_consolidated, session.last_consolidated
+                                    )
+                                self._save_session_safe(latest_session)
                         except Exception as e:
                             logger.error("Error during memory consolidation: {}", e)
                 finally:
@@ -639,14 +644,19 @@ class AgentLoop:
                 )
             )
 
-        final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages,
-            session_key=session.key,
-            on_progress=on_progress or _bus_progress,
-        )
+        try:
+            final_content, _, all_msgs = await self._run_agent_loop(
+                initial_messages,
+                session_key=session.key,
+                on_progress=on_progress or _bus_progress,
+            )
 
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+            if final_content is None:
+                final_content = "I've completed processing but have no response to give."
+        except Exception as e:
+            logger.exception("Error during agent loop iteration")
+            final_content = f"Sorry, I encountered an error during execution: {e}"
+            all_msgs = initial_messages
 
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
@@ -667,15 +677,10 @@ class AgentLoop:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
 
-        # Track tools used in this turn
-        tools_in_turn = []
-
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
 
-            if role == "tool":
-                tools_in_turn.append(entry.get("name", "unknown"))
             if (
                 role == "tool"
                 and isinstance(content, str)
@@ -683,24 +688,47 @@ class AgentLoop:
             ):
                 entry["content"] = content[: self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":
-                if isinstance(content, str) and content.startswith(
-                    ContextBuilder._RUNTIME_CONTEXT_TAG
-                ):
-                    continue
-                if isinstance(content, list):
-                    entry["content"] = [
-                        {"type": "text", "text": "[image]"}
-                        if (
-                            c.get("type") == "image_url"
-                            and c.get("image_url", {}).get("url", "").startswith("data:image/")
+                if isinstance(content, str) and ContextBuilder._RUNTIME_CONTEXT_TAG in content:
+                    try:
+                        _, clean = content.split("\n\n", 1)
+                        entry["content"] = (
+                            clean
+                            if not clean.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
+                            else content
                         )
-                        else c
-                        for c in content
-                    ]
+                    except ValueError:
+                        pass
 
-            if role == "assistant" and tools_in_turn:
-                # Attach tool usage info to the preceding assistant message if it lacks content
-                entry["tools_used"] = list(tools_in_turn)
+                if isinstance(content, list):
+                    new_content = []
+                    for c in content:
+                        if c.get("type") == "image_url" and c.get("image_url", {}).get(
+                            "url", ""
+                        ).startswith("data:image/"):
+                            new_content.append({"type": "text", "text": "[image]"})
+                        elif c.get(
+                            "type"
+                        ) == "text" and ContextBuilder._RUNTIME_CONTEXT_TAG in c.get("text", ""):
+                            # Strip runtime context from text chunk
+                            text = c.get("text", "")
+                            parts = text.split("\n\n", 1)
+                            if len(parts) == 2 and parts[0].startswith(
+                                ContextBuilder._RUNTIME_CONTEXT_TAG
+                            ):
+                                new_content.append({"type": "text", "text": parts[1]})
+                            else:
+                                new_content.append(c)
+                        else:
+                            new_content.append(c)
+                    entry["content"] = [c for c in new_content if c]
+
+            if role == "assistant" and entry.get("tool_calls"):
+                entry["tools_used"] = [
+                    tc.get("function", {}).get("name", "unknown")
+                    if isinstance(tc, dict)
+                    else getattr(tc, "name", "unknown")
+                    for tc in entry["tool_calls"]
+                ]
 
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
@@ -727,7 +755,10 @@ class AgentLoop:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(
-            msg, session_key=session_key, on_progress=on_progress
-        )
-        return response.content if response else ""
+
+        lock = self._processing_locks.setdefault(session_key, asyncio.Lock())
+        async with lock:
+            response = await self._process_message(
+                msg, session_key=session_key, on_progress=on_progress
+            )
+            return response.content if response else ""

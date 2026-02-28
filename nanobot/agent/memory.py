@@ -82,13 +82,15 @@ class MemoryStore:
             old_messages = session.messages
             keep_count = 0
             logger.info("Memory consolidation (archive_all): {} messages", len(session.messages))
+            end_idx = len(session.messages)
         else:
             keep_count = memory_window // 2
             if len(session.messages) <= keep_count:
                 return True
             if len(session.messages) - session.last_consolidated <= 0:
                 return True
-            old_messages = session.messages[session.last_consolidated : -keep_count]
+            end_idx = len(session.messages) - keep_count
+            old_messages = session.messages[session.last_consolidated : end_idx]
             if not old_messages:
                 return True
             logger.info(
@@ -100,8 +102,18 @@ class MemoryStore:
             # Fixed #6: Allow assistant messages with tool calls but no content
             if not m.get("content") and not m.get("tool_calls"):
                 continue
-            # Fixed #6: Handle empty content gracefully when tools are present
-            content_str = m.get("content") or ("(action)" if m.get("tool_calls") else "")
+
+            content_val = m.get("content")
+            if isinstance(content_val, list):
+                # Format vision inputs: list of text/image chunks to a concise string
+                text_parts = [
+                    c.get("text", "[image]")
+                    for c in content_val
+                    if isinstance(c, dict) and ("text" in c or c.get("type") == "image_url")
+                ]
+                content_str = " ".join(text_parts)
+            else:
+                content_str = content_val or ("(action)" if m.get("tool_calls") else "")
 
             if isinstance(content_str, str) and len(content_str) > 4000:
                 half = 2000
@@ -162,7 +174,7 @@ class MemoryStore:
                 if update != current_memory:
                     self.write_long_term(update)
 
-            session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
+            session.last_consolidated = end_idx
             logger.info(
                 "Memory consolidation done: {} messages, last_consolidated={}",
                 len(session.messages),

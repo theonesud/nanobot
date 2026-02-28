@@ -239,19 +239,22 @@ class CronService:
         due_jobs = [
             j
             for j in self._store.jobs
-            if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
+            if j.enabled
+            and not getattr(j, "_is_running", False)
+            and j.state.next_run_at_ms
+            and now >= j.state.next_run_at_ms
         ]
 
         async def _run_and_save(job: CronJob) -> None:
             try:
                 await self._execute_job(job)
             finally:
-                self._save_store()
+                job._is_running = False
+                await asyncio.to_thread(self._save_store)
                 self._arm_timer()
 
         for job in due_jobs:
-            # Prevent re-triggering while running
-            job.state.next_run_at_ms = None
+            job._is_running = True
             asyncio.create_task(_run_and_save(job))
 
         if not due_jobs:
