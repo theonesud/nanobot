@@ -20,6 +20,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import EmailConfig
+from nanobot.providers.base import LLMProvider
 
 
 class EmailChannel(BaseChannel):
@@ -50,9 +51,10 @@ class EmailChannel(BaseChannel):
         "Dec",
     )
 
-    def __init__(self, config: EmailConfig, bus: MessageBus):
+    def __init__(self, config: EmailConfig, bus: MessageBus, provider: LLMProvider | None = None):
         super().__init__(config, bus)
         self.config: EmailConfig = config
+        self.provider = provider
         self._last_subject_by_chat: dict[str, str] = {}
         self._last_message_id_by_chat: dict[str, str] = {}
         self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
@@ -87,16 +89,46 @@ class EmailChannel(BaseChannel):
                     if message_id:
                         self._last_message_id_by_chat[sender] = message_id
 
+                    # Phase 6: Urgent/Non-urgent triage via OpenCode
+                    content = item["content"]
+                    metadata = item.get("metadata", {})
+
+                    if self.provider:
+                        priority = await self._triage_message(content)
+                        metadata["priority"] = priority
+                        if priority == "urgent":
+                            content = "🚨 **URGENT EMAIL**\n\n" + content
+
                     await self._handle_message(
                         sender_id=sender,
                         chat_id=sender,
-                        content=item["content"],
-                        metadata=item.get("metadata", {}),
+                        content=content,
+                        metadata=metadata,
                     )
             except Exception as e:
                 logger.error("Email polling error: {}", e)
 
             await asyncio.sleep(poll_seconds)
+
+    async def _triage_message(self, content: str) -> str:
+        """Use the intelligence engine to triage urgency."""
+        try:
+            # Simple triage prompt
+            prompt = (
+                "You are an email triager. Categorize the following email as 'urgent' or 'normal'. "
+                "Urgent emails include: direct requests from the boss, critical production issues, "
+                "or time-sensitive personal matters. ONLY respond with 'urgent' or 'normal'.\n\n"
+                f"{content[:2000]}"
+            )
+            response = await self.provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.provider.default_model,
+            )
+            label = response.content.strip().lower()
+            return "urgent" if "urgent" in label else "normal"
+        except Exception as e:
+            logger.error("Email triage failed: {}", e)
+            return "normal"
 
     async def stop(self) -> None:
         """Stop polling loop."""
@@ -134,7 +166,9 @@ class EmailChannel(BaseChannel):
                 subject = override
 
         email_msg = EmailMessage()
-        email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
+        email_msg["From"] = (
+            self.config.from_address or self.config.smtp_username or self.config.imap_username
+        )
         email_msg["To"] = to_addr
         email_msg["Subject"] = subject
         email_msg.set_content(msg.content or "")
@@ -166,7 +200,7 @@ class EmailChannel(BaseChannel):
             missing.append("smtp_password")
 
         if missing:
-            logger.error("Email channel not configured, missing: {}", ', '.join(missing))
+            logger.error("Email channel not configured, missing: {}", ", ".join(missing))
             return False
         return True
 
@@ -309,7 +343,9 @@ class EmailChannel(BaseChannel):
                     # mark_seen is the primary dedup; this set is a safety net
                     if len(self._processed_uids) > self._MAX_PROCESSED_UIDS:
                         # Evict a random half to cap memory; mark_seen is the primary dedup
-                        self._processed_uids = set(list(self._processed_uids)[len(self._processed_uids) // 2:])
+                        self._processed_uids = set(
+                            list(self._processed_uids)[len(self._processed_uids) // 2 :]
+                        )
 
                 if mark_seen:
                     client.store(imap_id, "+FLAGS", "\\Seen")
@@ -330,7 +366,11 @@ class EmailChannel(BaseChannel):
     @staticmethod
     def _extract_message_bytes(fetched: list[Any]) -> bytes | None:
         for item in fetched:
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+            if (
+                isinstance(item, tuple)
+                and len(item) >= 2
+                and isinstance(item[1], (bytes, bytearray))
+            ):
                 return bytes(item[1])
         return None
 

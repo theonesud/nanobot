@@ -119,9 +119,7 @@ pip install nanobot-ai
 
 **1. Initialize**
 
-```bash
-nanobot onboard
-```
+The configuration is automatically created at `~/.nanobot/config.json` when you first run the agent.
 
 **2. Configure** (`~/.nanobot/config.json`)
 
@@ -882,7 +880,6 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 
 | Command | Description |
 |---------|-------------|
-| `nanobot onboard` | Initialize config & workspace |
 | `nanobot agent -m "..."` | Chat with the agent |
 | `nanobot agent` | Interactive chat mode |
 | `nanobot agent --no-markdown` | Show plain-text replies |
@@ -917,7 +914,7 @@ nanobot cron remove <job_id>
 
 The gateway wakes up every 30 minutes and checks `HEARTBEAT.md` in your workspace (`~/.nanobot/workspace/HEARTBEAT.md`). If the file has tasks, the agent executes them and delivers results to your most recently active chat channel.
 
-**Setup:** edit `~/.nanobot/workspace/HEARTBEAT.md` (created automatically by `nanobot onboard`):
+**Setup:** edit `~/.nanobot/workspace/HEARTBEAT.md` (created automatically on first run):
 
 ```markdown
 ## Periodic Tasks
@@ -940,7 +937,6 @@ The agent can also manage this file itself — ask it to "add a periodic task" a
 ### Docker Compose
 
 ```bash
-docker compose run --rm nanobot-cli onboard   # first-time setup
 vim ~/.nanobot/config.json                     # add API keys
 docker compose up -d nanobot-gateway           # start gateway
 ```
@@ -958,7 +954,7 @@ docker compose down                                      # stop
 docker build -t nanobot .
 
 # Initialize config (first time only)
-docker run -v ~/.nanobot:/root/.nanobot --rm nanobot onboard
+docker run -v ~/.nanobot:/root/.nanobot --rm nanobot agent -m "hi"
 
 # Edit config on host to add API keys
 vim ~/.nanobot/config.json
