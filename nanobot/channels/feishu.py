@@ -180,6 +180,37 @@ def _extract_element_content(element: dict) -> list[str]:
     return parts
 
 
+def _extract_from_lang(lang_content: dict) -> tuple[str | None, list[str]]:
+    if not isinstance(lang_content, dict):
+        return None, []
+    title = lang_content.get("title", "")
+    content_blocks = lang_content.get("content", [])
+    if not isinstance(content_blocks, list):
+        return None, []
+    text_parts = []
+    image_keys = []
+    if title:
+        text_parts.append(title)
+    for block in content_blocks:
+        if not isinstance(block, list):
+            continue
+        for element in block:
+            if isinstance(element, dict):
+                tag = element.get("tag")
+                if tag == "text":
+                    text_parts.append(element.get("text", ""))
+                elif tag == "a":
+                    text_parts.append(element.get("text", ""))
+                elif tag == "at":
+                    text_parts.append(f"@{element.get('user_name', 'user')}")
+                elif tag == "img":
+                    img_key = element.get("image_key")
+                    if img_key:
+                        image_keys.append(img_key)
+    text = " ".join(text_parts).strip() if text_parts else None
+    return text, image_keys
+
+
 def _extract_post_content(content_json: dict) -> tuple[str, list[str]]:
     """Extract text and image keys from Feishu post (rich text) message content.
 
@@ -191,46 +222,16 @@ def _extract_post_content(content_json: dict) -> tuple[str, list[str]]:
         (text, image_keys) - extracted text and list of image keys
     """
 
-    def extract_from_lang(lang_content: dict) -> tuple[str | None, list[str]]:
-        if not isinstance(lang_content, dict):
-            return None, []
-        title = lang_content.get("title", "")
-        content_blocks = lang_content.get("content", [])
-        if not isinstance(content_blocks, list):
-            return None, []
-        text_parts = []
-        image_keys = []
-        if title:
-            text_parts.append(title)
-        for block in content_blocks:
-            if not isinstance(block, list):
-                continue
-            for element in block:
-                if isinstance(element, dict):
-                    tag = element.get("tag")
-                    if tag == "text":
-                        text_parts.append(element.get("text", ""))
-                    elif tag == "a":
-                        text_parts.append(element.get("text", ""))
-                    elif tag == "at":
-                        text_parts.append(f"@{element.get('user_name', 'user')}")
-                    elif tag == "img":
-                        img_key = element.get("image_key")
-                        if img_key:
-                            image_keys.append(img_key)
-        text = " ".join(text_parts).strip() if text_parts else None
-        return text, image_keys
-
     # Try direct format first
     if "content" in content_json:
-        text, images = extract_from_lang(content_json)
+        text, images = _extract_from_lang(content_json)
         if text or images:
             return text or "", images
 
     # Try localized format
     for lang_key in ("zh_cn", "en_us", "ja_jp"):
         lang_content = content_json.get(lang_key)
-        text, images = extract_from_lang(lang_content)
+        text, images = _extract_from_lang(lang_content)
         if text or images:
             return text or "", images
 
@@ -269,6 +270,17 @@ class FeishuChannel(BaseChannel):
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
 
+    def _run_ws(self):
+        while self._running:
+            try:
+                self._ws_client.start()
+            except Exception as e:
+                logger.warning("Feishu WebSocket error: {}", e)
+            if self._running:
+                import time
+
+                time.sleep(5)
+
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
         if not FEISHU_AVAILABLE:
@@ -282,7 +294,6 @@ class FeishuChannel(BaseChannel):
         self._running = True
         self._loop = asyncio.get_running_loop()
 
-        # Create Lark client for sending messages
         self._client = (
             lark.Client.builder()
             .app_id(self.config.app_id)
@@ -291,7 +302,6 @@ class FeishuChannel(BaseChannel):
             .build()
         )
 
-        # Create event handler (only register message receive, ignore other events)
         event_handler = (
             lark.EventDispatcherHandler.builder(
                 self.config.encrypt_key or "",
@@ -301,7 +311,6 @@ class FeishuChannel(BaseChannel):
             .build()
         )
 
-        # Create WebSocket client for long connection
         self._ws_client = lark.ws.Client(
             self.config.app_id,
             self.config.app_secret,
@@ -309,25 +318,12 @@ class FeishuChannel(BaseChannel):
             log_level=lark.LogLevel.INFO,
         )
 
-        # Start WebSocket client in a separate thread with reconnect loop
-        def run_ws():
-            while self._running:
-                try:
-                    self._ws_client.start()
-                except Exception as e:
-                    logger.warning("Feishu WebSocket error: {}", e)
-                if self._running:
-                    import time
-
-                    time.sleep(5)
-
-        self._ws_thread = threading.Thread(target=run_ws, daemon=True)
+        self._ws_thread = threading.Thread(target=self._run_ws, daemon=True)
         self._ws_thread.start()
 
         logger.info("Feishu bot started with WebSocket long connection")
         logger.info("No public IP required - using WebSocket to receive events")
 
-        # Keep running until stopped
         while self._running:
             await asyncio.sleep(1)
 
@@ -389,7 +385,11 @@ class FeishuChannel(BaseChannel):
     _CODE_BLOCK_RE = re.compile(r"(```[\s\S]*?```)", re.MULTILINE)
 
     @staticmethod
-    def _parse_md_table(table_text: str) -> dict | None:
+    def _parse_md_table_split(row_line) -> list[str]:
+        return [c.strip() for c in row_line.strip("|").split("|")]
+
+    @classmethod
+    def _parse_md_table(cls, table_text: str) -> dict | None:
         """Parse a markdown table into a Feishu table element."""
         lines = [
             row_line.strip() for row_line in table_text.strip().split("\n") if row_line.strip()
@@ -397,11 +397,8 @@ class FeishuChannel(BaseChannel):
         if len(lines) < 3:
             return None
 
-        def split(row_line):
-            return [c.strip() for c in row_line.strip("|").split("|")]
-
-        headers = split(lines[0])
-        rows = [split(row_line) for row_line in lines[2:]]
+        headers = cls._parse_md_table_split(lines[0])
+        rows = [cls._parse_md_table_split(row_line) for row_line in lines[2:]]
         columns = [
             {"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
             for i, h in enumerate(headers)
@@ -742,29 +739,20 @@ class FeishuChannel(BaseChannel):
             message = event.message
             sender = event.sender
 
-            # Deduplication check
-            message_id = message.message_id
-            if message_id in self._processed_message_ids:
+            if message.message_id in self._processed_message_ids:
                 return
-            self._processed_message_ids[message_id] = None
+            self._processed_message_ids[message.message_id] = None
 
-            # Trim cache
             while len(self._processed_message_ids) > 1000:
                 self._processed_message_ids.popitem(last=False)
 
-            # Skip bot messages
             if sender.sender_type == "bot":
                 return
 
             sender_id = sender.sender_id.open_id if sender.sender_id else "unknown"
-            chat_id = message.chat_id
-            chat_type = message.chat_type
-            msg_type = message.message_type
 
-            # Add reaction
-            await self._add_reaction(message_id, self.config.react_emoji)
+            await self._add_reaction(message.message_id, self.config.react_emoji)
 
-            # Parse content
             content_parts = []
             media_paths = []
 
@@ -773,33 +761,32 @@ class FeishuChannel(BaseChannel):
             except json.JSONDecodeError:
                 content_json = {}
 
-            if msg_type == "text":
+            if message.message_type == "text":
                 text = content_json.get("text", "")
                 if text:
                     content_parts.append(text)
 
-            elif msg_type == "post":
+            elif message.message_type == "post":
                 text, image_keys = _extract_post_content(content_json)
                 if text:
                     content_parts.append(text)
-                # Download images embedded in post
                 for img_key in image_keys:
                     file_path, content_text = await self._download_and_save_media(
-                        "image", {"image_key": img_key}, message_id
+                        "image", {"image_key": img_key}, message.message_id
                     )
                     if file_path:
                         media_paths.append(file_path)
                     content_parts.append(content_text)
 
-            elif msg_type in ("image", "audio", "file", "media"):
+            elif message.message_type in ("image", "audio", "file", "media"):
                 file_path, content_text = await self._download_and_save_media(
-                    msg_type, content_json, message_id
+                    message.message_type, content_json, message.message_id
                 )
                 if file_path:
                     media_paths.append(file_path)
                 content_parts.append(content_text)
 
-            elif msg_type in (
+            elif message.message_type in (
                 "share_chat",
                 "share_user",
                 "interactive",
@@ -807,30 +794,29 @@ class FeishuChannel(BaseChannel):
                 "system",
                 "merge_forward",
             ):
-                # Handle share cards and interactive messages
-                text = _extract_share_card_content(content_json, msg_type)
+                text = _extract_share_card_content(content_json, message.message_type)
                 if text:
                     content_parts.append(text)
 
             else:
-                content_parts.append(MSG_TYPE_MAP.get(msg_type, f"[{msg_type}]"))
+                content_parts.append(
+                    MSG_TYPE_MAP.get(message.message_type, f"[{message.message_type}]")
+                )
 
             content = "\n".join(content_parts) if content_parts else ""
 
             if not content and not media_paths:
                 return
 
-            # Forward to message bus
-            reply_to = chat_id if chat_type == "group" else sender_id
             await self._handle_message(
                 sender_id=sender_id,
-                chat_id=reply_to,
+                chat_id=message.chat_id if message.chat_type == "group" else sender_id,
                 content=content,
                 media=media_paths,
                 metadata={
-                    "message_id": message_id,
-                    "chat_type": chat_type,
-                    "msg_type": msg_type,
+                    "message_id": message.message_id,
+                    "chat_type": message.chat_type,
+                    "msg_type": message.message_type,
                 },
             )
 

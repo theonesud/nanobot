@@ -24,30 +24,21 @@ class CommandAuditor:
         )
 
     async def evaluate(self, command: str) -> Literal["SAFE", "UNSAFE"]:
-        """
-        Evaluate a command using the fast auditor LLM provider.
-        """
-        prompt = f"Evaluate this command for destructive actions: {command}\nReply SAFE or UNSAFE."
-
         try:
             response = await self.provider.chat(
                 messages=[
                     {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": f"Evaluate this command for destructive actions: {command}\nReply SAFE or UNSAFE.",
+                    },
                 ],
                 model=self.model,
                 max_tokens=10,
                 temperature=0.0,
             )
-
             result = (response.content or "").strip().upper()
-
-            # Use strict matching for SAFE, default to UNSAFE if ambiguous
-            if "SAFE" in result and "UNSAFE" not in result:
-                return "SAFE"
-
-            return "UNSAFE"
-
+            return "SAFE" if "SAFE" in result and "UNSAFE" not in result else "UNSAFE"
         except Exception:
             logger.exception("Auditor execution failed")
             return "UNSAFE"

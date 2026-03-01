@@ -57,7 +57,7 @@ class EmailChannel(BaseChannel):
         self.provider = provider
         self._last_subject_by_chat: dict[str, str] = {}
         self._last_message_id_by_chat: dict[str, str] = {}
-        self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
+        self._processed_uids: set[str] = set()
         self._MAX_PROCESSED_UIDS = 100000
 
     async def start(self) -> None:
@@ -81,15 +81,11 @@ class EmailChannel(BaseChannel):
                 inbound_items = await asyncio.to_thread(self._fetch_new_messages)
                 for item in inbound_items:
                     sender = item["sender"]
-                    subject = item.get("subject", "")
-                    message_id = item.get("message_id", "")
+                    if item.get("subject", ""):
+                        self._last_subject_by_chat[sender] = item.get("subject", "")
+                    if item.get("message_id", ""):
+                        self._last_message_id_by_chat[sender] = item.get("message_id", "")
 
-                    if subject:
-                        self._last_subject_by_chat[sender] = subject
-                    if message_id:
-                        self._last_message_id_by_chat[sender] = message_id
-
-                    # Phase 6: Urgent/Non-urgent triage via OpenCode
                     content = item["content"]
                     metadata = item.get("metadata", {})
 
@@ -149,17 +145,14 @@ class EmailChannel(BaseChannel):
             logger.warning("Email channel missing recipient address")
             return
 
-        # Determine if this is a reply (recipient has sent us an email before)
         is_reply = to_addr in self._last_subject_by_chat
         force_send = bool((msg.metadata or {}).get("force_send"))
 
-        # autoReplyEnabled only controls automatic replies, not proactive sends
         if is_reply and not self.config.auto_reply_enabled and not force_send:
             logger.info("Skip automatic email reply to {}: auto_reply_enabled is false", to_addr)
             return
 
-        base_subject = self._last_subject_by_chat.get(to_addr, "nanobot reply")
-        subject = self._reply_subject(base_subject)
+        subject = self._reply_subject(self._last_subject_by_chat.get(to_addr, "nanobot reply"))
         if msg.metadata and isinstance(msg.metadata.get("subject"), str):
             override = msg.metadata["subject"].strip()
             if override:
@@ -237,11 +230,7 @@ class EmailChannel(BaseChannel):
         end_date: date,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Fetch messages in [start_date, end_date) by IMAP date search.
-
-        This is used for historical summarization tasks (e.g. "yesterday").
-        """
+        """Fetch messages in [start_date, end_date) by IMAP date search."""
         if end_date <= start_date:
             return []
 
@@ -340,9 +329,7 @@ class EmailChannel(BaseChannel):
 
                 if dedupe and uid:
                     self._processed_uids.add(uid)
-                    # mark_seen is the primary dedup; this set is a safety net
                     if len(self._processed_uids) > self._MAX_PROCESSED_UIDS:
-                        # Evict a random half to cap memory; mark_seen is the primary dedup
                         self._processed_uids = set(
                             list(self._processed_uids)[len(self._processed_uids) // 2 :]
                         )

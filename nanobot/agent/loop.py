@@ -195,26 +195,19 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
+    def _tool_hint_str(tc: ToolCallRequest) -> str:
+        args = tc.arguments
+        if tc.name in ("read_file", "write_file", "edit_file"):
+            return f"{tc.name}({args.get('path', '...')})"
+        if tc.name == "exec":
+            cmd = args.get("command", "")
+            return f"exec({cmd[:30]}...)" if len(cmd) > 30 else f"exec({cmd})"
+        val = next(iter(args.values()), "...") if args else "..."
+        return f"{tc.name}({val})"
+
+    @staticmethod
     def _tool_hint(tool_calls: list[ToolCallRequest]) -> str:
-        """Format tool calls as concise hint, e.g. 'web_search("query")'."""
-
-        def _fmt(tc: ToolCallRequest) -> str:
-            name = tc.name
-            args = tc.arguments
-            if name == "read_file":
-                return f"read_file({args.get('path', '...')})"
-            if name == "write_file":
-                return f"write_file({args.get('path', '...')})"
-            if name == "edit_file":
-                return f"edit_file({args.get('path', '...')})"
-            if name == "exec":
-                cmd = args.get("command", "")
-                return f"exec({cmd[:30]}...)" if len(cmd) > 30 else f"exec({cmd})"
-
-            val = next(iter(args.values()), "...") if args else "..."
-            return f"{name}({val})"
-
-        return ", ".join(_fmt(tc) for tc in tool_calls)
+        return ", ".join(AgentLoop._tool_hint_str(tc) for tc in tool_calls)
 
     def _get_model_pricing(self, model: str) -> tuple[float, float]:
         """Get cost per 1M tokens (input, output) for the given model."""
@@ -239,14 +232,25 @@ class AgentLoop:
             return 0.075, 0.30
         return 5.0, 15.0
 
-    def _save_session_safe(self, session: Session) -> None:
-        """Atomic session save wrapper. Fixed #25."""
-        try:
-            self.sessions.save(session)
-        except Exception as e:
-            from loguru import logger
-
-            logger.error("Failed to save session {}: {}", session.key, e)
+    async def _execute_single_tool(
+        self, tc: Any, metadata: dict, tools_used: list[str]
+    ) -> tuple[str, str, str]:
+        tools_used.append(tc.name)
+        channel = metadata.get("channel")
+        chat_id = metadata.get("chat_id")
+        args_str = json.dumps(tc.arguments, ensure_ascii=False)
+        logger.info("Tool call: {}({})", tc.name, args_str[:200])
+        result = await self.tools.execute(
+            tc.name,
+            tc.arguments,
+            channel=channel,
+            chat_id=chat_id,
+            metadata={"slack": {"thread_ts": metadata.get("thread_ts")}},
+            outbound_msg_factory=lambda content: OutboundMessage(
+                channel=channel, chat_id=chat_id, content=content
+            ),
+        )
+        return tc.id, tc.name, str(result)
 
     async def _run_agent_loop(
         self,
@@ -327,29 +331,13 @@ class AgentLoop:
                 )
 
                 metadata = initial_messages[0].get("_nanobot_metadata", {})
-                channel = metadata.get("channel")
-                chat_id = metadata.get("chat_id")
-                thread_ts = metadata.get("thread_ts")
 
-                async def _execute_tool(
-                    tc: Any, channel=channel, chat_id=chat_id, thread_ts=thread_ts
-                ) -> tuple[str, str, str]:
-                    tools_used.append(tc.name)
-                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tc.name, args_str[:200])
-                    result = await self.tools.execute(
-                        tc.name,
-                        tc.arguments,
-                        channel=channel,
-                        chat_id=chat_id,
-                        metadata={"slack": {"thread_ts": thread_ts}},
-                        outbound_msg_factory=lambda content, chat_id=chat_id, channel=channel: (
-                            OutboundMessage(channel=channel, chat_id=chat_id, content=content)
-                        ),
-                    )
-                    return tc.id, tc.name, str(result)
-
-                results = await asyncio.gather(*[_execute_tool(tc) for tc in response.tool_calls])
+                results = await asyncio.gather(
+                    *[
+                        self._execute_single_tool(tc, metadata, tools_used)
+                        for tc in response.tool_calls
+                    ]
+                )
 
                 for tc_id, tc_name, tc_result in results:
                     messages = self.context.add_tool_result(messages, tc_id, tc_name, tc_result)
@@ -373,6 +361,11 @@ class AgentLoop:
 
         return final_content, tools_used, messages
 
+    def _on_task_done(self, t: asyncio.Task, key: str) -> None:
+        tasks = self._active_tasks.get(key)
+        if tasks and t in tasks:
+            tasks.remove(t)
+
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
@@ -390,13 +383,7 @@ class AgentLoop:
             else:
                 task = asyncio.create_task(self._dispatch(msg))
                 self._active_tasks.setdefault(msg.session_key, []).append(task)
-
-                def _task_done(t: asyncio.Task, *, key: str = msg.session_key) -> None:
-                    tasks = self._active_tasks.get(key)
-                    if tasks and t in tasks:
-                        tasks.remove(t)
-
-                task.add_done_callback(_task_done)
+                task.add_done_callback(lambda t, key=msg.session_key: self._on_task_done(t, key))
 
     async def _handle_stop(self, msg: InboundMessage) -> None:
         """Cancel all active tasks and subagents for the session."""
@@ -449,7 +436,6 @@ class AgentLoop:
                 )
 
     async def close_mcp(self) -> None:
-        """Close MCP connections."""
         if self._mcp_stack:
             try:
                 await self._mcp_stack.aclose()
@@ -460,7 +446,6 @@ class AgentLoop:
             self._mcp_connecting = False
 
     def stop(self) -> None:
-        """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
 
@@ -493,6 +478,21 @@ class AgentLoop:
             channel=channel,
             chat_id=chat_id,
             content=final_content or "Background task completed.",
+        )
+
+    async def _bus_progress(
+        self, msg: InboundMessage, content: str, *, tool_hint: bool = False
+    ) -> None:
+        meta = dict(msg.metadata or {})
+        meta["_progress"] = True
+        meta["_tool_hint"] = tool_hint
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=content,
+                metadata=meta,
+            )
         )
 
     async def _handle_new_command(self, session: Session, msg: InboundMessage) -> OutboundMessage:
@@ -530,39 +530,38 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content="New session started."
         )
 
+    async def _do_consolidation(self, session: Session) -> None:
+        lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+        try:
+            async with lock:
+                if await self.context.memory.consolidate(
+                    session,
+                    self.provider,
+                    self.model,
+                    memory_window=self.memory_window,
+                ):
+                    latest_session = self.sessions.get_or_create(session.key)
+                    if latest_session is not session:
+                        latest_session.last_consolidated = max(
+                            latest_session.last_consolidated, session.last_consolidated
+                        )
+                    try:
+                        self.sessions.save(latest_session)
+                    except Exception as e:
+                        logger.error("Failed to save session {}: {}", latest_session.key, e)
+        except Exception as e:
+            logger.error("Error during memory consolidation: {}", e)
+        finally:
+            self._consolidating.discard(session.key)
+            _task = asyncio.current_task()
+            if _task is not None:
+                self._consolidation_tasks.discard(_task)
+
     def _check_consolidation(self, session: Session) -> None:
-        """Trigger memory consolidation if memory window is exceeded."""
         unconsolidated = len(session.messages) - session.last_consolidated
         if unconsolidated >= self.memory_window and session.key not in self._consolidating:
             self._consolidating.add(session.key)
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-
-            async def _consolidate_and_unlock():
-                try:
-                    async with lock:
-                        try:
-                            if await self.context.memory.consolidate(
-                                session,
-                                self.provider,
-                                self.model,
-                                memory_window=self.memory_window,
-                            ):
-                                # Fixed #8: Session.last_consolidated is updated inside consolidate()
-                                latest_session = self.sessions.get_or_create(session.key)
-                                if latest_session is not session:
-                                    latest_session.last_consolidated = max(
-                                        latest_session.last_consolidated, session.last_consolidated
-                                    )
-                                self._save_session_safe(latest_session)
-                        except Exception as e:
-                            logger.error("Error during memory consolidation: {}", e)
-                finally:
-                    self._consolidating.discard(session.key)
-                    _task = asyncio.current_task()
-                    if _task is not None:
-                        self._consolidation_tasks.discard(_task)
-
-            _task = asyncio.create_task(_consolidate_and_unlock())
+            _task = asyncio.create_task(self._do_consolidation(session))
             self._consolidation_tasks.add(_task)
 
     async def _process_message(
@@ -571,15 +570,17 @@ class AgentLoop:
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
-        """Process a single inbound message and return the response."""
         if msg.channel == "system":
             return await self._handle_system_message(msg)
 
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info(
+            "Processing message from {}:{}: {}",
+            msg.channel,
+            msg.sender_id,
+            msg.content[:80] + "..." if len(msg.content) > 80 else msg.content,
+        )
 
-        key = session_key or msg.session_key
-        session = self.sessions.get_or_create(key)
+        session = self.sessions.get_or_create(session_key or msg.session_key)
 
         # God Mode check
         is_godmode = msg.metadata.get("is_godmode", False)
@@ -631,24 +632,12 @@ class AgentLoop:
             "message_id": msg.metadata.get("message_id"),
         }
 
-        async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
-            meta = dict(msg.metadata or {})
-            meta["_progress"] = True
-            meta["_tool_hint"] = tool_hint
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=content,
-                    metadata=meta,
-                )
-            )
-
         try:
             final_content, _, all_msgs = await self._run_agent_loop(
                 initial_messages,
                 session_key=session.key,
-                on_progress=on_progress or _bus_progress,
+                on_progress=on_progress
+                or (lambda c, **k: self._bus_progress(msg, c, tool_hint=k.get("tool_hint", False))),
             )
 
             if final_content is None:

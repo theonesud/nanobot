@@ -36,19 +36,15 @@ class SlackChannel(BaseChannel):
         self._running = True
         self._app = AsyncApp(token=self.config.bot_token)
 
-        # Register listeners
         self._app.event("message")(self._on_bolt_event)
         self._app.event("app_mention")(self._on_bolt_event)
 
-        # Action handlers for interactive elements (e.g., security prompts)
         self._app.action(re.compile("^(approve|reject)_.*"))(self._handle_action)
 
         self._handler = AsyncSocketModeHandler(self._app, self.config.app_token)
 
-        # Resolve bot user ID
         try:
-            auth = await self._app.client.auth_test()
-            self._bot_user_id = auth.get("user_id")
+            self._bot_user_id = (await self._app.client.auth_test()).get("user_id")
             logger.info("Slack bot connected as {}", self._bot_user_id)
         except Exception as e:
             logger.warning("Slack auth_test failed: {}", e)
@@ -65,40 +61,30 @@ class SlackChannel(BaseChannel):
         user_id = event.get("user")
         text = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
-        channel_type = event.get("channel_type")
 
-        if not channel_id or not user_id:
+        if not channel_id or not user_id or user_id == self._bot_user_id:
             return
 
-        if user_id == self._bot_user_id:
-            return
-
-        if not self._is_allowed(user_id, channel_id, channel_type):
+        if not self._is_allowed(user_id, channel_id, event.get("channel_type")):
             return
 
         if not self._should_respond_in_channel(event.get("type"), text, channel_id):
             return
 
-        # God Mode detection
-        is_godmode = False
-        if text.startswith("/godmode"):
-            is_godmode = True
+        is_godmode = text.startswith("/godmode")
+        if is_godmode:
             text = text.replace("/godmode", "", 1).strip()
             logger.info("🚨 GOD MODE triggered by <@{}>", user_id)
-
-        msg_text = self._strip_bot_mention(text)
-
-        metadata = {
-            "slack_event_type": event.get("type"),
-            "thread_ts": thread_ts,
-            "is_godmode": is_godmode,
-        }
 
         await self._handle_message(
             sender_id=user_id,
             chat_id=channel_id,
-            content=msg_text,
-            metadata=metadata,
+            content=self._strip_bot_mention(text),
+            metadata={
+                "slack_event_type": event.get("type"),
+                "thread_ts": thread_ts,
+                "is_godmode": is_godmode,
+            },
             session_key=f"slack:{channel_id}:{thread_ts}" if thread_ts else None,
         )
 
@@ -107,15 +93,11 @@ class SlackChannel(BaseChannel):
         if not self._app:
             return
 
-        thread_ts = msg.metadata.get("thread_ts")
-        mrkdwn_content = self._to_mrkdwn(msg.content)
-
         try:
             await self._app.client.chat_postMessage(
                 channel=msg.chat_id,
-                text=mrkdwn_content,
-                thread_ts=thread_ts,
-                # Prefer blocks if there are multiple sections or images, but for now simple text
+                text=self._to_mrkdwn(msg.content),
+                thread_ts=msg.metadata.get("thread_ts"),
             )
         except Exception as e:
             logger.error("Failed to send Slack message: {}", e)
@@ -176,14 +158,11 @@ class SlackChannel(BaseChannel):
         from nanobot.bus.events import ApprovalResponse
 
         approved = action_id.startswith("approve_")
-        request_id = action_id.replace("approve_", "").replace("reject_", "")
 
-        # Update original message to remove buttons
         try:
             channel_id = body.get("channel", {}).get("id")
             message_ts = body.get("message", {}).get("ts")
             user_id = body.get("user", {}).get("id")
-
             status_text = "✅ Approved" if approved else "❌ Rejected"
 
             await self._app.client.chat_update(
@@ -201,9 +180,12 @@ class SlackChannel(BaseChannel):
                 text=f"Security Audit: {status_text}",
             )
 
-            # Publish response to bus
             await self.bus.publish_approval_response(
-                ApprovalResponse(id=request_id, approved=approved, responder_id=user_id)
+                ApprovalResponse(
+                    id=action_id.replace("approve_", "").replace("reject_", ""),
+                    approved=approved,
+                    responder_id=user_id,
+                )
             )
 
         except Exception as e:
@@ -257,12 +239,12 @@ class SlackChannel(BaseChannel):
         """Fix markdown artifacts that slackify_markdown misses."""
         code_blocks: list[str] = []
 
-        def _save_code(m: re.Match) -> str:
+        def replace_and_store(m):
             code_blocks.append(m.group(0))
             return f"\x00CB{len(code_blocks) - 1}\x00"
 
-        text = cls._CODE_FENCE_RE.sub(_save_code, text)
-        text = cls._INLINE_CODE_RE.sub(_save_code, text)
+        text = cls._CODE_FENCE_RE.sub(replace_and_store, text)
+        text = cls._INLINE_CODE_RE.sub(replace_and_store, text)
         text = cls._LEFTOVER_BOLD_RE.sub(r"*\1*", text)
         text = cls._LEFTOVER_HEADER_RE.sub(r"*\1*", text)
         text = cls._BARE_URL_RE.sub(lambda m: m.group(0).replace("&amp;", "&"), text)
