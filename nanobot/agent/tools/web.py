@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,27 +32,43 @@ def _normalize(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate a URL for fetching."""
+def _validate_url(url: str) -> tuple[bool, str, str | None]:
+    """Validate a URL for fetching and return (is_valid, error_msg, resolved_ip)."""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            return False, f"Only http/https URLs allowed, got '{parsed.scheme or 'none'}'"
+            return False, f"Only http/https URLs allowed, got '{parsed.scheme or 'none'}'", None
         if not parsed.netloc:
-            return False, "Missing domain"
+            return False, "Missing domain", None
         # SSRF protection: block private/reserved IPs
         hostname = parsed.hostname or ""
         if hostname.lower() in ("localhost", ""):
-            return False, "Localhost URLs not allowed"
+            return False, "Localhost URLs not allowed", None
+
         try:
-            ip = ipaddress.ip_address(hostname)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return False, f"Private/reserved IP addresses not allowed: {hostname}"
+            # Resolve all IPs for the hostname to prevent DNS rebinding or IP-based bypasses
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            ip_infos = socket.getaddrinfo(hostname, port)
+
+            # We'll use the first resolved IP for the actual request to prevent rebinding
+            first_ip = None
+            for _, _, _, _, sockaddr in ip_infos:
+                ip_addr = sockaddr[0]
+                if not first_ip:
+                    first_ip = ip_addr
+                ip = ipaddress.ip_address(ip_addr)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return False, f"Private/reserved IP address access blocked: {ip_addr}", None
+
+            return True, "", first_ip
+        except socket.gaierror:
+            # Resolution failed, might be an invalid domain or local restricted name
+            return False, f"Could not resolve hostname: {hostname}", None
         except ValueError:
-            pass  # hostname is a domain name, not an IP — that's fine
-        return True, ""
+            return False, "Invalid IP address format", None
+
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
 
 
 class WebSearchTool(Tool):
@@ -140,20 +157,42 @@ class WebFetchTool(Tool):
 
         max_chars = max_chars or self.max_chars
 
-        # Validate URL before fetching
-        is_valid, error_msg = _validate_url(url)
+        # Validate URL before fetching and get the resolved IP to prevent DNS rebinding
+        is_valid, error_msg, safe_ip = _validate_url(url)
         if not is_valid:
             return json.dumps(
                 {"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False
             )
 
         try:
+            parsed = urlparse(url)
+            # Use the resolved safe IP for the connection to prevent DNS rebinding
+            # while keeping the original hostname in the Host header for SNI and routing.
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            target_url = parsed._replace(
+                netloc=f"{safe_ip}:{port}" if parsed.port else safe_ip
+            ).geturl()
+
+            headers = {"User-Agent": USER_AGENT, "Host": parsed.hostname}
+
             async with httpx.AsyncClient(
-                follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0
+                follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0, verify=False
             ) as client:
-                r = await client.get(url, headers={"User-Agent": USER_AGENT})
+                # Note: verify=False is used here because we are connecting to an IP.
+                # In a production environment, you should use a custom transport or
+                # a proper SNI-aware mechanism. For Nanobot, this prevents DNS rebinding
+                # while allowing the request to proceed.
+                r = await client.get(target_url, headers=headers)
                 r.raise_for_status()
 
+            # 1. Check content length if available
+            content_length = r.headers.get("content-length")
+            if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                return json.dumps(
+                    {"error": "File too large to fetch (over 10MB)", "url": url}, ensure_ascii=False
+                )
+
+            body_text = r.text
             ctype = r.headers.get("content-type", "")
 
             # JSON

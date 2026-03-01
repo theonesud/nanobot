@@ -64,6 +64,24 @@ class ReadFileTool(Tool):
             return f"Error reading file: {str(e)}"
 
 
+import os
+import tempfile
+
+
+def _atomic_write(file_path: Path, content: str) -> None:
+    """Write content to a file atomically using a temporary file."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=file_path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(temp_path, file_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
+
+
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
@@ -93,8 +111,7 @@ class WriteFileTool(Tool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
+            _atomic_write(file_path, content)
             return f"Successfully wrote {len(content)} bytes to {file_path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -146,7 +163,7 @@ class EditFileTool(Tool):
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
 
             new_content = content.replace(old_text, new_text, 1)
-            file_path.write_text(new_content, encoding="utf-8")
+            _atomic_write(file_path, new_content)
 
             return f"Successfully edited {file_path}"
         except PermissionError as e:

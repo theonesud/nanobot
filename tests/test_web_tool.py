@@ -194,6 +194,11 @@ class TestWebFetchTool:
     async def test_invalid_url_returns_error(self):
         tool = WebFetchTool()
         result = await tool.execute("ftp://bad-scheme.com")
+        with patch(
+            "nanobot.agent.tools.web.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.216.34", 80))],
+        ):
+            result = await tool.execute("ftp://bad-scheme.com")
         data = json.loads(result)
         assert "error" in data
 
@@ -214,13 +219,19 @@ class TestWebFetchTool:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "nanobot.agent.tools.web.socket.getaddrinfo",
+                return_value=[(None, None, None, None, ("93.184.216.34", 80))],
+            ),
+        ):
             tool = WebFetchTool()
             result = await tool.execute("https://example.com")
 
         data = json.loads(result)
         assert "text" in data
-        assert "Hello world" in data["text"] or "Test Page" in data["text"]
+        assert "Hello world" in data["text"]
 
     @pytest.mark.asyncio
     async def test_fetch_json_content(self):
@@ -237,7 +248,13 @@ class TestWebFetchTool:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "nanobot.agent.tools.web.socket.getaddrinfo",
+                return_value=[(None, None, None, None, ("1.2.3.4", 443))],
+            ),
+        ):
             tool = WebFetchTool()
             result = await tool.execute("https://api.example.com/data")
 
@@ -261,7 +278,13 @@ class TestWebFetchTool:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "nanobot.agent.tools.web.socket.getaddrinfo",
+                return_value=[(None, None, None, None, ("1.2.3.4", 443))],
+            ),
+        ):
             tool = WebFetchTool(max_chars=50000)
             result = await tool.execute("https://example.com")
 
@@ -298,12 +321,40 @@ class TestWebFetchTool:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "nanobot.agent.tools.web.socket.getaddrinfo",
+                return_value=[(None, None, None, None, ("1.2.3.4", 443))],
+            ),
+        ):
             tool = WebFetchTool()
             result = await tool.execute("https://example.com", extract_mode="text")
 
         data = json.loads(result)
         assert "Hello" in data["text"]
+
+
+class TestValidateUrlMocked:
+    @pytest.mark.asyncio
+    async def test_private_ip_blocked(self):
+        with patch(
+            "nanobot.agent.tools.web.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("192.168.1.1", 80))],
+        ):
+            valid, msg = _validate_url("http://internal.com")
+            assert not valid
+            assert "Private/reserved" in msg
+
+    @pytest.mark.asyncio
+    async def test_loopback_blocked(self):
+        with patch(
+            "nanobot.agent.tools.web.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("127.0.0.1", 80))],
+        ):
+            valid, msg = _validate_url("http://my-loopback.com")
+            assert not valid
+            assert "protected" in msg or "Private/reserved" in msg
 
 
 class TestWebFetchMarkdownConversion:

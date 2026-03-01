@@ -46,7 +46,7 @@ class AgentLoop:
     5. Sends responses back
     """
 
-    _TOOL_RESULT_MAX_CHARS = 500
+    _TOOL_RESULT_MAX_CHARS = 4000
 
     def __init__(
         self,
@@ -112,11 +112,28 @@ class AgentLoop:
         self.db = Database(workspace)
         self.daily_budget = 5.0  # Default $5.00 daily budget
 
+        # Periodic lock cleanup
+        self._cleanup_task: asyncio.Task | None = None
+
         # Inject provider hint into context builder
         p_name = "opencode" if provider.__class__.__name__ == "OpenCodeProvider" else "auto"
         self.context.set_provider_hint(p_name)
 
         self._register_default_tools()
+
+    async def _periodic_cleanup(self) -> None:
+        """Periodic cleanup of stale session locks."""
+        while self._running:
+            await asyncio.sleep(3600)  # Hourly
+            # Only remove locks if no active tasks for that session
+            keys_to_remove = [
+                k
+                for k in self._processing_locks.keys()
+                if not self._active_tasks.get(k) and k not in self._consolidating
+            ]
+            for k in keys_to_remove:
+                self._processing_locks.pop(k, None)
+                self._consolidation_locks.pop(k, None)
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -209,29 +226,6 @@ class AgentLoop:
     def _tool_hint(tool_calls: list[ToolCallRequest]) -> str:
         return ", ".join(AgentLoop._tool_hint_str(tc) for tc in tool_calls)
 
-    def _get_model_pricing(self, model: str) -> tuple[float, float]:
-        """Get cost per 1M tokens (input, output) for the given model."""
-        m = model.lower()
-        if "opus" in m:
-            return 15.0, 75.0
-        if "sonnet" in m:
-            return 3.0, 15.0
-        if "haiku" in m:
-            return 0.25, 1.25
-        if "gpt-4o" in m:
-            return 2.5, 10.0
-        if "gpt-4-turbo" in m:
-            return 10.0, 30.0
-        if "gpt-3.5" in m:
-            return 0.5, 1.5
-        if "deepseek" in m:
-            return 0.27, 1.10
-        if "gemini-1.5-pro" in m:
-            return 1.25, 5.0
-        if "gemini-1.5-flash" in m:
-            return 0.075, 0.30
-        return 5.0, 15.0
-
     async def _execute_single_tool(
         self, tc: Any, metadata: dict, tools_used: list[str]
     ) -> tuple[str, str, str]:
@@ -267,6 +261,19 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
+            # Budget enforcement (check before next LLM call)
+            daily_total = self.db.get_daily_cost()
+            if daily_total > self.daily_budget:
+                logger.critical(
+                    "DAILY BUDGET EXCEEDED: ${:.2f} / ${:.2f}", daily_total, self.daily_budget
+                )
+                final_content = (
+                    f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. "
+                    "Please increase the limit or wait until tomorrow."
+                )
+                messages = self.context.add_assistant_message(messages, final_content)
+                return final_content, tools_used, messages
+
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
@@ -278,10 +285,12 @@ class AgentLoop:
 
             # Log tokens and cost
             if response.usage:
+                from nanobot.utils.helpers import get_model_pricing
+
                 p_tokens = response.usage.get("prompt_tokens", 0)
                 c_tokens = response.usage.get("completion_tokens", 0)
                 # Model-specific pricing (separate input/output rates)
-                input_rate, output_rate = self._get_model_pricing(self.model)
+                input_rate, output_rate = get_model_pricing(self.model)
                 cost = p_tokens / 1_000_000.0 * input_rate + c_tokens / 1_000_000.0 * output_rate
                 self.db.log_cost(
                     session_key,
@@ -291,19 +300,6 @@ class AgentLoop:
                     c_tokens,
                     cost,
                 )
-
-                # Budget enforcement
-                daily_total = self.db.get_daily_cost()
-                if daily_total > self.daily_budget:
-                    logger.critical(
-                        "DAILY BUDGET EXCEEDED: ${:.2f} / ${:.2f}", daily_total, self.daily_budget
-                    )
-                    return (
-                        f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. "
-                        "Please increase the limit or wait until tomorrow.",
-                        tools_used,
-                        messages,
-                    )
 
             if response.has_tool_calls:
                 if on_progress:
@@ -369,6 +365,7 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
+        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         await self._connect_mcp()
         logger.info("Agent loop started")
 
@@ -409,6 +406,9 @@ class AgentLoop:
         """Process a message under the session-specific lock."""
         lock = self._processing_locks.setdefault(msg.session_key, asyncio.Lock())
         async with lock:
+            if asyncio.current_task().cancelled():
+                logger.info("Task cancelled before processing session {}", msg.session_key)
+                return
             try:
                 response = await self._process_message(msg)
                 if response is not None:
@@ -473,7 +473,7 @@ class AgentLoop:
         self._save_turn(
             session, all_msgs, len(messages) - 1
         )  # Correct skip: current user msg and context were added
-        self.sessions.save(session)
+        await self.sessions.save_async(session)
         return OutboundMessage(
             channel=channel,
             chat_id=chat_id,
@@ -524,7 +524,7 @@ class AgentLoop:
             self._consolidating.discard(session.key)
 
         session.clear()
-        self.sessions.save(session)
+        await self.sessions.save_async(session)
         self.sessions.invalidate(session.key)
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content="New session started."
@@ -546,7 +546,7 @@ class AgentLoop:
                             latest_session.last_consolidated, session.last_consolidated
                         )
                     try:
-                        self.sessions.save(latest_session)
+                        await self.sessions.save_async(latest_session)
                     except Exception as e:
                         logger.error("Failed to save session {}: {}", latest_session.key, e)
         except Exception as e:
@@ -648,7 +648,7 @@ class AgentLoop:
             all_msgs = initial_messages
 
         self._save_turn(session, all_msgs, 1 + len(history))
-        self.sessions.save(session)
+        await self.sessions.save_async(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None

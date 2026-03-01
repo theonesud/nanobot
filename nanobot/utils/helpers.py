@@ -68,3 +68,27 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         for name in added:
             Console().print(f"  [dim]Created {name}[/dim]")
     return added
+
+
+def get_model_pricing(model: str) -> tuple[float, float]:
+    """Get cost per 1M tokens (input, output) for the given model."""
+    m = model.lower()
+    if "opus" in m:
+        return 15.0, 75.0
+    if "sonnet" in m:
+        return 3.0, 15.0
+    if "haiku" in m:
+        return 0.25, 1.25
+    if "gpt-4o" in m:
+        return 2.5, 10.0
+    if "gpt-4-turbo" in m:
+        return 10.0, 30.0
+    if "gpt-3.5" in m:
+        return 0.5, 1.5
+    if "deepseek" in m:
+        return 0.27, 1.10
+    if "gemini-1.5-pro" in m:
+        return 1.25, 5.0
+    if "gemini-1.5-flash" in m:
+        return 0.075, 0.30
+    return 5.0, 15.0

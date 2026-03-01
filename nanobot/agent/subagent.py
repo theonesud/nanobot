@@ -55,6 +55,10 @@ class SubagentManager:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
         self.max_iterations = 15
+        from nanobot.utils.database import Database
+
+        self.db = Database(workspace)
+        self.daily_budget = 5.0  # Default $5.00 daily budget
 
     async def spawn(
         self,
@@ -132,6 +136,20 @@ class SubagentManager:
             while iteration < max_iterations:
                 iteration += 1
 
+                # Budget enforcement (check before next LLM call)
+                daily_total = self.db.get_daily_cost()
+                if daily_total > self.daily_budget:
+                    logger.critical(
+                        "SUBAGENT BUDGET EXCEEDED: ${:.2f} / ${:.2f}",
+                        daily_total,
+                        self.daily_budget,
+                    )
+                    final_result = (
+                        f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. "
+                        "Subagent stopping."
+                    )
+                    break
+
                 response = await self.provider.chat(
                     messages=messages,
                     tools=tools.get_definitions(),
@@ -139,6 +157,25 @@ class SubagentManager:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
+
+                # Log tokens and cost (using the main agent loop pricing logic)
+                if response.usage:
+                    from nanobot.utils.helpers import get_model_pricing
+
+                    p_tokens = response.usage.get("prompt_tokens", 0)
+                    c_tokens = response.usage.get("completion_tokens", 0)
+                    input_rate, output_rate = get_model_pricing(self.model)
+                    cost = (
+                        p_tokens / 1_000_000.0 * input_rate + c_tokens / 1_000_000.0 * output_rate
+                    )
+                    self.db.log_cost(
+                        f"subagent:{task_id}",
+                        self.provider.__class__.__name__,
+                        self.model,
+                        p_tokens,
+                        c_tokens,
+                        cost,
+                    )
 
                 if response.has_tool_calls:
                     # Add assistant message with tool calls
@@ -161,16 +198,22 @@ class SubagentManager:
                         }
                     )
 
-                    # Execute tools
-                    for tool_call in response.tool_calls:
-                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                        logger.debug(
-                            "Subagent [{}] executing: {} with arguments: {}",
-                            task_id,
-                            tool_call.name,
-                            args_str,
-                        )
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
+                    # Execute tools in parallel
+                    results = await asyncio.gather(
+                        *[
+                            tools.execute(
+                                tc.name,
+                                tc.arguments,
+                                channel=origin["channel"],
+                                chat_id=origin["chat_id"],
+                                # Subagents don't have a message tool yet, but we pass metadata anyway
+                                # so that ExecTool can trigger approval requests on the bus.
+                            )
+                            for tc in response.tool_calls
+                        ]
+                    )
+
+                    for tool_call, result in zip(response.tool_calls, results):
                         messages.append(
                             {
                                 "role": "tool",
@@ -180,7 +223,9 @@ class SubagentManager:
                             }
                         )
                 else:
-                    final_result = response.content
+                    from nanobot.agent.loop import AgentLoop
+
+                    final_result = AgentLoop._strip_think(response.content)
                     break
 
             if final_result is None:

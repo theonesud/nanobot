@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
+import asyncio
+from nanobot.utils.lock import FileLock
 
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
@@ -53,8 +55,10 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
-        self.memory_path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory_path.write_text(content, encoding="utf-8")
+        """Write content to MEMORY.md atomically."""
+        from nanobot.agent.tools.filesystem import _atomic_write
+
+        _atomic_write(self.memory_path, content)
 
     def append_history(self, entry: str) -> None:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,18 +141,22 @@ class MemoryStore:
 ## Conversation to Process
 {chr(10).join(lines)}"""
 
+        memory_lock_path = self.memory_path.with_suffix(".lock")
+        history_lock_path = self.history_path.with_suffix(".lock")
+
         try:
-            response = await provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_SAVE_MEMORY_TOOL,
-                model=model,
-            )
+            async with FileLock(memory_lock_path), FileLock(history_lock_path):
+                response = await provider.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    tools=_SAVE_MEMORY_TOOL,
+                    model=model,
+                )
 
             if not response.has_tool_calls:
                 logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
