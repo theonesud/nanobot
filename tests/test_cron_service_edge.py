@@ -1,5 +1,4 @@
-"""Tests for cron/service.py — CronService public API edge cases."""
-
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,39 +9,29 @@ from nanobot.cron.types import CronSchedule
 
 class TestComputeNextRun:
     def test_at_future(self):
-        import time
-
         future_ms = int(time.time() * 1000) + 60000
         sched = CronSchedule(kind="at", at_ms=future_ms)
         result = _compute_next_run(sched, int(time.time() * 1000))
         assert result == future_ms
 
     def test_at_past_returns_none(self):
-        import time
-
         past_ms = int(time.time() * 1000) - 60000
         sched = CronSchedule(kind="at", at_ms=past_ms)
         result = _compute_next_run(sched, int(time.time() * 1000))
         assert result is None
 
     def test_every_ms(self):
-        import time
-
         now_ms = int(time.time() * 1000)
         sched = CronSchedule(kind="every", every_ms=5000)
         result = _compute_next_run(sched, now_ms)
         assert result == now_ms + 5000
 
     def test_every_ms_zero_returns_none(self):
-        import time
-
         sched = CronSchedule(kind="every", every_ms=0)
         result = _compute_next_run(sched, int(time.time() * 1000))
         assert result is None
 
     def test_cron_expression(self):
-        import time
-
         now_ms = int(time.time() * 1000)
         sched = CronSchedule(kind="cron", expr="* * * * *")
         result = _compute_next_run(sched, now_ms)
@@ -58,7 +47,7 @@ class TestComputeNextRun:
 class TestValidateScheduleForAdd:
     def test_valid_cron(self):
         sched = CronSchedule(kind="cron", expr="0 * * * *")
-        _validate_schedule_for_add(sched)  # should not raise
+        _validate_schedule_for_add(sched)
 
     def test_tz_on_non_cron_raises(self):
         sched = CronSchedule(kind="every", every_ms=5000, tz="UTC")
@@ -72,7 +61,7 @@ class TestValidateScheduleForAdd:
 
     def test_valid_tz_on_cron(self):
         sched = CronSchedule(kind="cron", expr="0 * * * *", tz="UTC")
-        _validate_schedule_for_add(sched)  # should not raise
+        _validate_schedule_for_add(sched)
 
 
 class TestCronServicePublicAPI:
@@ -81,70 +70,79 @@ class TestCronServicePublicAPI:
         store_path = tmp_path / "cron.json"
         return CronService(store_path=store_path, on_job=AsyncMock())
 
-    def test_add_job_returns_job_with_id(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_add_job_returns_job_with_id(self, service):
+        job = await service.add_job(
             name="test", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         assert job.id is not None
         assert len(job.id) > 0
 
-    def test_add_job_persists_to_disk(self, service, tmp_path):
-        service.add_job(
+    @pytest.mark.asyncio
+    async def test_add_job_persists_to_disk(self, service, tmp_path):
+        await service.add_job(
             name="persistent", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         store_path = tmp_path / "cron.json"
         assert store_path.exists()
 
-    def test_add_job_appears_in_list(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_add_job_appears_in_list(self, service):
+        job = await service.add_job(
             name="listed", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         jobs = service.list_jobs()
-        assert any(j.id == job.id for j in jobs)
+        assert any((j.id == job.id for j in jobs))
 
-    def test_list_jobs_excludes_disabled_by_default(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_list_jobs_excludes_disabled_by_default(self, service):
+        job = await service.add_job(
             name="tog", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        service.enable_job(job.id, enabled=False)
+        await service.enable_job(job.id, enabled=False)
         jobs = service.list_jobs()
-        assert not any(j.id == job.id for j in jobs)
+        assert not any((j.id == job.id for j in jobs))
 
-    def test_list_jobs_includes_disabled_when_flag_set(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_list_jobs_includes_disabled_when_flag_set(self, service):
+        job = await service.add_job(
             name="tog2", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        service.enable_job(job.id, enabled=False)
+        await service.enable_job(job.id, enabled=False)
         jobs = service.list_jobs(include_disabled=True)
-        assert any(j.id == job.id for j in jobs)
+        assert any((j.id == job.id for j in jobs))
 
-    def test_remove_job_returns_true(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_remove_job_returns_true(self, service):
+        job = await service.add_job(
             name="remove", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        removed = service.remove_job(job.id)
+        removed = await service.remove_job(job.id)
         assert removed is True
 
-    def test_remove_job_returns_false_for_missing(self, service):
-        removed = service.remove_job("nonexistent-id-xyz")
+    @pytest.mark.asyncio
+    async def test_remove_job_returns_false_for_missing(self, service):
+        removed = await service.remove_job("nonexistent-id-xyz")
         assert removed is False
 
-    def test_enable_job_sets_enabled(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_enable_job_sets_enabled(self, service):
+        job = await service.add_job(
             name="enable", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        service.enable_job(job.id, enabled=False)
-        service.enable_job(job.id, enabled=True)
+        await service.enable_job(job.id, enabled=False)
+        await service.enable_job(job.id, enabled=True)
         jobs = service.list_jobs()
         matching = [j for j in jobs if j.id == job.id]
         assert len(matching) == 1
         assert matching[0].enabled is True
 
-    def test_disable_job_clears_next_run(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_disable_job_clears_next_run(self, service):
+        job = await service.add_job(
             name="disable", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        result = service.enable_job(job.id, enabled=False)
+        result = await service.enable_job(job.id, enabled=False)
         assert result is not None
         assert result.state.next_run_at_ms is None
 
@@ -154,11 +152,12 @@ class TestCronServicePublicAPI:
         assert "jobs" in status
         assert "next_wake_at_ms" in status
 
-    def test_status_job_count(self, service):
-        service.add_job(
+    @pytest.mark.asyncio
+    async def test_status_job_count(self, service):
+        await service.add_job(
             name="count1", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        service.add_job(
+        await service.add_job(
             name="count2", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         status = service.status()
@@ -166,7 +165,7 @@ class TestCronServicePublicAPI:
 
     @pytest.mark.asyncio
     async def test_start_loads_and_runs(self, service):
-        service.add_job(
+        await service.add_job(
             name="start_test", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         await service.start()
@@ -179,8 +178,9 @@ class TestCronServicePublicAPI:
         service.stop()
         assert service._running is False
 
-    def test_add_job_with_deliver_and_channel(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_add_job_with_deliver_and_channel(self, service):
+        job = await service.add_job(
             name="deliver",
             schedule=CronSchedule(kind="cron", expr="0 * * * *"),
             message="report",
@@ -192,8 +192,9 @@ class TestCronServicePublicAPI:
         assert job.payload.channel == "slack"
         assert job.payload.to == "C123"
 
-    def test_add_job_delete_after_run(self, service):
-        job = service.add_job(
+    @pytest.mark.asyncio
+    async def test_add_job_delete_after_run(self, service):
+        job = await service.add_job(
             name="once",
             schedule=CronSchedule(kind="at", at_ms=9999999999999),
             message="run once",
@@ -205,7 +206,7 @@ class TestCronServicePublicAPI:
     async def test_run_job_executes_callback(self, tmp_path):
         callback = AsyncMock()
         service = CronService(store_path=tmp_path / "cron.json", on_job=callback)
-        job = service.add_job(
+        job = await service.add_job(
             name="run_me", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
         result = await service.run_job(job.id)
@@ -214,33 +215,32 @@ class TestCronServicePublicAPI:
 
     @pytest.mark.asyncio
     async def test_run_disabled_job_blocked_without_force(self, service):
-        job = service.add_job(
+        job = await service.add_job(
             name="disabled_run",
             schedule=CronSchedule(kind="cron", expr="0 * * * *"),
             message="ping",
         )
-        service.enable_job(job.id, enabled=False)
+        await service.enable_job(job.id, enabled=False)
         result = await service.run_job(job.id)
         assert result is False
 
     @pytest.mark.asyncio
     async def test_run_disabled_job_forced(self, service):
-        job = service.add_job(
+        job = await service.add_job(
             name="force_run", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="ping"
         )
-        service.enable_job(job.id, enabled=False)
+        await service.enable_job(job.id, enabled=False)
         result = await service.run_job(job.id, force=True)
         assert result is True
 
-    def test_persistence_reload(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_persistence_reload(self, tmp_path):
         store = tmp_path / "cron.json"
         s1 = CronService(store_path=store)
-        j = s1.add_job(
+        j = await s1.add_job(
             name="reload", schedule=CronSchedule(kind="cron", expr="0 * * * *"), message="hi"
         )
         job_id = j.id
-
-        # New service instance reads from same file
         s2 = CronService(store_path=store)
         jobs = s2.list_jobs()
-        assert any(j.id == job_id for j in jobs)
+        assert any((j.id == job_id for j in jobs))

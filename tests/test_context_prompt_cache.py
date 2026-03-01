@@ -1,5 +1,3 @@
-"""Tests for cache-friendly prompt construction."""
-
 from __future__ import annotations
 
 import datetime as datetime_module
@@ -13,7 +11,7 @@ class _FakeDatetime(real_datetime):
     current = real_datetime(2026, 2, 24, 13, 59)
 
     @classmethod
-    def now(cls, tz=None):  # type: ignore[override]
+    def now(cls, tz=None):
         return cls.current
 
 
@@ -24,37 +22,25 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 
 def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) -> None:
-    """System prompt should not change just because wall clock minute changes."""
     monkeypatch.setattr(datetime_module, "datetime", _FakeDatetime)
-
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
-
     _FakeDatetime.current = real_datetime(2026, 2, 24, 13, 59)
     prompt1 = builder.build_system_prompt()
-
     _FakeDatetime.current = real_datetime(2026, 2, 24, 14, 0)
     prompt2 = builder.build_system_prompt()
-
     assert prompt1 == prompt2
 
 
 def test_runtime_context_is_prepended_to_user_message(tmp_path) -> None:
-    """Runtime metadata should be prepended to the user message to avoid double-user API restrictions."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
-
     messages = builder.build_messages(
-        history=[],
-        current_message="Return exactly: OK",
-        channel="cli",
-        chat_id="direct",
+        history=[], current_message="Return exactly: OK", channel="cli", chat_id="direct"
     )
-
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
     assert "## Current Session" not in messages[0]["content"]
-
     assert messages[1]["role"] == "user"
     runtime_content = messages[1]["content"]
     assert isinstance(runtime_content, str)

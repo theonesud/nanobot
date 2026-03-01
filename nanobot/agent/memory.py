@@ -1,5 +1,3 @@
-"""Memory system for persistent agent memory."""
-
 from __future__ import annotations
 
 import json
@@ -7,14 +5,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
-import asyncio
+
+from nanobot.agent.tools.filesystem import _atomic_write
+from nanobot.providers.base import LLMProvider
+from nanobot.session.manager import Session
 from nanobot.utils.lock import FileLock
 
 if TYPE_CHECKING:
-    from nanobot.providers.base import LLMProvider
-    from nanobot.session.manager import Session
-
-
+    pass
 _SAVE_MEMORY_TOOL = [
     {
         "type": "function",
@@ -26,13 +24,11 @@ _SAVE_MEMORY_TOOL = [
                 "properties": {
                     "history_entry": {
                         "type": "string",
-                        "description": "A paragraph (2-5 sentences) summarizing key events/decisions/topics. "
-                        "Start with [YYYY-MM-DD HH:MM]. Include detail useful for grep search.",
+                        "description": "A paragraph (2-5 sentences) summarizing key events/decisions/topics. Start with [YYYY-MM-DD HH:MM]. Include detail useful for grep search.",
                     },
                     "memory_update": {
                         "type": "string",
-                        "description": "Full updated long-term memory as markdown. Include all existing "
-                        "facts plus new ones. Return unchanged if nothing new.",
+                        "description": "Full updated long-term memory as markdown. Include all existing facts plus new ones. Return unchanged if nothing new.",
                     },
                 },
                 "required": ["history_entry", "memory_update"],
@@ -43,11 +39,10 @@ _SAVE_MEMORY_TOOL = [
 
 
 class MemoryStore:
-    """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
-
     def __init__(self, workspace: Path):
         self.memory_path = workspace / "memory" / "MEMORY.md"
         self.history_path = workspace / "memory" / "HISTORY.md"
+        self.memory_path.parent.mkdir(parents=True, exist_ok=True)
 
     def read_long_term(self) -> str:
         if self.memory_path.exists():
@@ -55,9 +50,6 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
-        """Write content to MEMORY.md atomically."""
-        from nanobot.agent.tools.filesystem import _atomic_write
-
         _atomic_write(self.memory_path, content)
 
     def append_history(self, entry: str) -> None:
@@ -78,10 +70,6 @@ class MemoryStore:
         archive_all: bool = False,
         memory_window: int = 50,
     ) -> bool:
-        """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
-
-        Returns True on success (including no-op), False on failure.
-        """
         if archive_all:
             old_messages = session.messages
             keep_count = 0
@@ -100,16 +88,12 @@ class MemoryStore:
             logger.info(
                 "Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count
             )
-
         lines = []
         for m in old_messages:
-            # Fixed #6: Allow assistant messages with tool calls but no content
-            if not m.get("content") and not m.get("tool_calls"):
+            if not m.get("content") and (not m.get("tool_calls")):
                 continue
-
             content_val = m.get("content")
             if isinstance(content_val, list):
-                # Format vision inputs: list of text/image chunks to a concise string
                 text_parts = [
                     c.get("text", "[image]")
                     for c in content_val
@@ -118,7 +102,6 @@ class MemoryStore:
                 content_str = " ".join(text_parts)
             else:
                 content_str = content_val or ("(action)" if m.get("tool_calls") else "")
-
             if isinstance(content_str, str) and len(content_str) > 4000:
                 half = 2000
                 content_str = (
@@ -126,24 +109,14 @@ class MemoryStore:
                     + f"\n... [{len(content_str) - 4000} chars truncated] ...\n"
                     + content_str[-half:]
                 )
-
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
             lines.append(
                 f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {content_str}"
             )
-
         current_memory = self.read_long_term()
-        prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
-
-## Current Long-term Memory
-{current_memory or "(empty)"}
-
-## Conversation to Process
-{chr(10).join(lines)}"""
-
+        prompt = f"Process this conversation and call the save_memory tool with your consolidation.\n\n## Current Long-term Memory\n{current_memory or '(empty)'}\n\n## Conversation to Process\n{chr(10).join(lines)}"
         memory_lock_path = self.memory_path.with_suffix(".lock")
         history_lock_path = self.history_path.with_suffix(".lock")
-
         try:
             async with FileLock(memory_lock_path), FileLock(history_lock_path):
                 response = await provider.chat(
@@ -157,13 +130,10 @@ class MemoryStore:
                     tools=_SAVE_MEMORY_TOOL,
                     model=model,
                 )
-
             if not response.has_tool_calls:
                 logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
                 return False
-
             args = response.tool_calls[0].arguments
-            # Some providers return arguments as a JSON string instead of dict
             if isinstance(args, str):
                 args = json.loads(args)
             if not isinstance(args, dict):
@@ -171,7 +141,6 @@ class MemoryStore:
                     "Memory consolidation: unexpected arguments type {}", type(args).__name__
                 )
                 return False
-
             if entry := args.get("history_entry"):
                 if not isinstance(entry, str):
                     entry = json.dumps(entry, ensure_ascii=False)
@@ -181,7 +150,6 @@ class MemoryStore:
                     update = json.dumps(update, ensure_ascii=False)
                 if update != current_memory:
                     self.write_long_term(update)
-
             session.last_consolidated = end_idx
             logger.info(
                 "Memory consolidation done: {} messages, last_consolidated={}",

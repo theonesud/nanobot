@@ -108,3 +108,17 @@ known-first-party = ["nanobot", "bridge", "tests", "case"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.vulture]
+ignore_names = [
+    "*Channel", "stop", "send", "_ws_connected", "connect_error", "on_session_events", 
+    "on_panel_events", "C2CMessage", "on_ready", "on_c2c_message_create", 
+    "on_direct_message_create", "main", "channels_status", "channels_login", 
+    "cron_list", "cron_add", "cron_remove", "cron_enable", "cron_run", 
+    "provider_login", "_login_openai_codex", "_login_github_copilot", 
+    "model_config", "mode", "webhook_path", "user_token_read_only", 
+    "reply_in_thread", "matrix", "custom", "anthropic", "openai", "openrouter", 
+    "deepseek", "zhipu", "dashscope", "vllm", "gemini", "moonshot", "minimax", 
+    "aihubmix", "siliconflow", "volcengine", "openai_codex", "github_copilot", 
+    "opencode", "host", "suppress_debug_info", "drop_params", "add_message", "save",
+    "mock_config", "event_loop", "side_effect", "__aexit__", "set_send_callback"
+]

@@ -1,5 +1,4 @@
-"""System tools for agent self-management."""
-
+import asyncio
 import os
 import sys
 from typing import Any
@@ -10,11 +9,6 @@ from nanobot.agent.tools.base import Tool
 
 
 class ReloadTool(Tool):
-    """
-    Restart the agent process.
-    Use this after modifying source code to apply changes.
-    """
-
     name = "reload_agent"
     description = (
         "Restart the current agent process to apply code changes or configuration updates."
@@ -26,8 +20,6 @@ class ReloadTool(Tool):
     }
 
     async def execute(self, **kwargs: Any) -> str:
-        import asyncio
-
         reason = kwargs.get("reason", "No reason provided")
         logger.warning("🔄 RELOADING AGENT: {}", reason)
 
@@ -39,5 +31,4 @@ class ReloadTool(Tool):
             os.execv(executable, [executable] + args)
 
         asyncio.create_task(_delayed_reload())
-
         return "🔄 Reload initiated. I will be back in a few seconds."

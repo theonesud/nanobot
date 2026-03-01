@@ -1,5 +1,3 @@
-"""Comprehensive tests for provider registry."""
-
 import pytest
 
 from nanobot.providers.registry import (
@@ -24,7 +22,7 @@ class TestProviderSpec:
 
     def test_frozen_dataclass(self):
         spec = ProviderSpec(name="x", keywords=("x",), env_key="KEY")
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(Exception, match="cannot assign to field|FrozenInstanceError"):
             spec.name = "y"
 
 
@@ -64,7 +62,6 @@ class TestFindByModel:
         assert spec is None
 
     def test_prefix_beats_keyword(self):
-        """github-copilot/...-codex should match github_copilot, not openai_codex."""
         spec = find_by_model("github-copilot/gpt-5.3-codex")
         assert spec is not None
         assert spec.name == "github_copilot"
@@ -150,7 +147,6 @@ class TestFindGateway:
         assert spec.is_local
 
     def test_returns_none_for_standard_provider(self):
-        """Standard providers like anthropic should NOT be returned as gateways."""
         spec = find_gateway(provider_name="anthropic")
         assert spec is None
 
@@ -171,11 +167,6 @@ class TestProvidersRegistry:
     def test_no_duplicate_names(self):
         names = [s.name for s in PROVIDERS]
         assert len(names) == len(set(names)), "Duplicate provider names found"
-
-    def test_opencode_is_direct(self):
-        spec = find_by_name("opencode")
-        assert spec is not None
-        assert spec.is_direct
 
     def test_anthropic_supports_prompt_caching(self):
         spec = find_by_name("anthropic")

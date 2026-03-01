@@ -1,5 +1,3 @@
-"""OpenCode CLI provider implementation."""
-
 import asyncio
 import json
 from typing import Any, Awaitable, Callable
@@ -10,13 +8,6 @@ from nanobot.providers.base import LLMProvider, LLMResponse
 
 
 class OpenCodeProvider(LLMProvider):
-    """
-    LLM provider using the OpenCode CLI (`opencode run`).
-
-    This provider delegates reasoning and tool execution to the OpenCode CLI tool.
-    By default, it uses the installed `opencode` binary.
-    """
-
     def __init__(
         self,
         api_key: str | None = None,
@@ -37,54 +28,25 @@ class OpenCodeProvider(LLMProvider):
         temperature: float = 0.7,
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> LLMResponse:
-        """
-        Send a chat completion request via OpenCode CLI.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'.
-            tools: Optional list of tool definitions.
-            model: Model identifier.
-            max_tokens: Maximum tokens in response.
-            temperature: Sampling temperature.
-            on_progress: Optional callback to stream progress.
-
-        Returns:
-            LLMResponse with content.
-        """
-        # Build prompt from conversation history to provide full context
         prompt_parts = []
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content") or ""
             if role == "system":
-                continue  # System prompt is passed via separate flag
-            # Use XML tags which are better understood by models for turn-taking
+                continue
             prompt_parts.append(f"<{role.upper()}>\n{content}\n</{role.upper()}>")
-
         system_msg = next((m.get("content") for m in messages if m.get("role") == "system"), None)
-
         full_prompt = "\n\n".join(prompt_parts)
         if system_msg:
             full_prompt = f"<SYSTEM>\n{system_msg}\n</SYSTEM>\n\n{full_prompt}"
-
-        # We append a final instruction so the model knows it's its turn to reply
         full_prompt += "\n\n<SYSTEM>\nPlease respond to the last <USER> message.</SYSTEM>"
-
         if tools:
-            # OpenCode acts as its own autonomous agent and executes internal tools.
-            # It cannot yield execution back to Nanobot for Nanobot-specific tools,
-            # so we ignore the injected tools to avoid confusing the CLI system.
             logger.debug("OpenCodeProvider ignores Nanobot tools.")
-
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
-
         try:
             process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-
             full_content = []
             usage = {}
             finish_reason = "stop"
@@ -98,7 +60,6 @@ class OpenCodeProvider(LLMProvider):
                             stderr_buffer.append(line.decode(errors="replace"))
 
             stderr_task = asyncio.create_task(consume_stderr())
-
             if process.stdout:
                 async for line in process.stdout:
                     if not line:
@@ -107,7 +68,6 @@ class OpenCodeProvider(LLMProvider):
                         event = json.loads(line.decode().strip())
                         evt_type = event.get("type")
                         part = event.get("part", {})
-
                         if evt_type == "step_start":
                             step_count += 1
                             if on_progress:
@@ -132,18 +92,14 @@ class OpenCodeProvider(LLMProvider):
                             usage = part.get("tokens", {})
                     except Exception as e:
                         logger.debug(f"Failed to parse line from OpenCode: {e}")
-
             await process.wait()
             await stderr_task
-
             if process.returncode != 0:
                 stderr_data = "".join(stderr_buffer)
                 return LLMResponse(
                     content=f"Error calling OpenCode CLI (exit code {process.returncode}):\n{stderr_data}",
                     finish_reason="error",
                 )
-
-            # Normalize usage tokens for SQLite tracking
             norm_usage = {}
             if usage:
                 norm_usage["prompt_tokens"] = usage.get("prompt", 0) or usage.get(
@@ -153,20 +109,14 @@ class OpenCodeProvider(LLMProvider):
                     "completion_tokens", 0
                 )
                 norm_usage["total_tokens"] = usage.get("total", 0) or usage.get("total_tokens", 0)
-
             return LLMResponse(
-                content="".join(full_content),
-                finish_reason=finish_reason,
-                usage=norm_usage,
+                content="".join(full_content), finish_reason=finish_reason, usage=norm_usage
             )
-
         except Exception as e:
             logger.exception("OpenCode CLI execution failed")
             return LLMResponse(
-                content=f"Exception calling OpenCode CLI: {str(e)}",
-                finish_reason="error",
+                content=f"Exception calling OpenCode CLI: {str(e)}", finish_reason="error"
             )
 
     def get_default_model(self) -> str:
-        """Get the default model identifier."""
         return self.default_model

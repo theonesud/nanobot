@@ -1,4 +1,4 @@
-"""Tests for session/manager.py — Session and SessionManager."""
+import time
 
 import pytest
 
@@ -48,7 +48,6 @@ class TestSession:
         session.add_message("assistant", "First assistant")
         session.add_message("user", "Then user")
         history = session.get_history()
-        # History should start with a user message, not assistant
         assert history[0]["role"] == "user"
 
     def test_get_history_excludes_consolidated(self):
@@ -57,8 +56,6 @@ class TestSession:
             session.add_message("user", f"msg{i}")
         session.last_consolidated = 8
         history = session.get_history()
-        # Only the last 2 messages (indices 8, 9) are unconsolidated
-        # But get_history starts at user turn, so it should be at most 2
         assert len(history) <= 2
 
     def test_get_history_preserves_tool_fields(self):
@@ -66,7 +63,6 @@ class TestSession:
         session.add_message("assistant", "", tool_calls=[{"id": "t1"}])
         session.add_message("user", "done")
         history = session.get_history()
-        # Find the assistant entry
         asst = next((m for m in history if m["role"] == "assistant"), None)
         if asst:
             assert "tool_calls" in asst
@@ -105,8 +101,6 @@ class TestSessionManager:
         session.add_message("user", "Hello")
         session.add_message("assistant", "World")
         manager.save(session)
-
-        # New manager — no cache
         new_mgr = SessionManager(temp_workspace)
         reloaded = new_mgr.get_or_create("test:room1")
         assert len(reloaded.messages) == 2
@@ -118,7 +112,6 @@ class TestSessionManager:
         session.add_message("user", "m2")
         session.last_consolidated = 1
         manager.save(session)
-
         new_mgr = SessionManager(temp_workspace)
         reloaded = new_mgr.get_or_create("persist:test")
         assert reloaded.last_consolidated == 1
@@ -127,7 +120,6 @@ class TestSessionManager:
         session = manager.get_or_create("meta:test")
         session.metadata["custom"] = "value"
         manager.save(session)
-
         new_mgr = SessionManager(temp_workspace)
         reloaded = new_mgr.get_or_create("meta:test")
         assert reloaded.metadata.get("custom") == "value"
@@ -135,7 +127,6 @@ class TestSessionManager:
     def test_invalidate_removes_from_cache(self, manager):
         s1 = manager.get_or_create("invalid:test")
         manager.invalidate("invalid:test")
-        # Without disk save, this creates a fresh session
         s2 = manager.get_or_create("invalid:test")
         assert s1 is not s2
 
@@ -143,32 +134,24 @@ class TestSessionManager:
         s1 = manager.get_or_create("list:room1")
         s1.add_message("user", "hi")
         manager.save(s1)
-
         s2 = manager.get_or_create("list:room2")
         s2.add_message("user", "yo")
         manager.save(s2)
-
         sessions = manager.list_sessions()
         keys = [s["key"] for s in sessions]
         assert "list:room1" in keys
         assert "list:room2" in keys
 
     def test_list_sessions_sorted_by_updated_at(self, manager):
-        import time
-
         s1 = manager.get_or_create("sorted:a")
         s1.add_message("user", "old")
         manager.save(s1)
-
         time.sleep(0.01)
-
         s2 = manager.get_or_create("sorted:b")
         s2.add_message("user", "new")
         manager.save(s2)
-
         sessions = manager.list_sessions()
         keys = [s["key"] for s in sessions]
-        # More recently updated should come first
         assert keys.index("sorted:b") < keys.index("sorted:a")
 
     def test_get_or_create_missing_session_returns_fresh(self, manager):
@@ -176,13 +159,10 @@ class TestSessionManager:
         assert session.messages == []
 
     def test_safe_filename_with_colons(self, temp_workspace):
-        """Session keys with colons should map to safe filenames."""
         mgr = SessionManager(temp_workspace)
         session = mgr.get_or_create("channel:chat:room")
         session.add_message("user", "test")
         mgr.save(session)
-
         session_files = list((temp_workspace / "sessions").glob("*.jsonl"))
         assert len(session_files) == 1
-        # Colons should be replaced by underscores in filename
         assert ":" not in session_files[0].name

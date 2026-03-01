@@ -1,5 +1,3 @@
-"""Test message tool suppress logic for final replies."""
-
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,8 +20,6 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
 
 
 class TestMessageToolSuppressLogic:
-    """Final reply suppressed only when message tool sends to the same target."""
-
     @pytest.mark.asyncio
     async def test_suppress_when_sent_to_same_target(self, tmp_path: Path) -> None:
         loop = _make_loop(tmp_path)
@@ -38,19 +34,16 @@ class TestMessageToolSuppressLogic:
                 LLMResponse(content="Done", tool_calls=[]),
             ]
         )
-        loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
+        loop.provider.chat = AsyncMock(side_effect=lambda *_a, **_kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
-
         sent: list[OutboundMessage] = []
         mt = loop.tools.get("message")
         if isinstance(mt, MessageTool):
             mt.set_send_callback(AsyncMock(side_effect=lambda m: sent.append(m)))
-
         msg = InboundMessage(channel="feishu", sender_id="user1", chat_id="chat123", content="Send")
         result = await loop._process_message(msg)
-
         assert len(sent) == 1
-        assert result is None  # suppressed
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_not_suppress_when_sent_to_different_target(self, tmp_path: Path) -> None:
@@ -70,22 +63,19 @@ class TestMessageToolSuppressLogic:
                 LLMResponse(content="I've sent the email.", tool_calls=[]),
             ]
         )
-        loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
+        loop.provider.chat = AsyncMock(side_effect=lambda *_a, **_kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
-
         sent: list[OutboundMessage] = []
         mt = loop.tools.get("message")
         if isinstance(mt, MessageTool):
             mt.set_send_callback(AsyncMock(side_effect=lambda m: sent.append(m)))
-
         msg = InboundMessage(
             channel="feishu", sender_id="user1", chat_id="chat123", content="Send email"
         )
         result = await loop._process_message(msg)
-
         assert len(sent) == 1
         assert sent[0].channel == "email"
-        assert result is not None  # not suppressed
+        assert result is not None
         assert result.channel == "feishu"
 
     @pytest.mark.asyncio
@@ -93,10 +83,8 @@ class TestMessageToolSuppressLogic:
         loop = _make_loop(tmp_path)
         loop.provider.chat = AsyncMock(return_value=LLMResponse(content="Hello!", tool_calls=[]))
         loop.tools.get_definitions = MagicMock(return_value=[])
-
         msg = InboundMessage(channel="feishu", sender_id="user1", chat_id="chat123", content="Hi")
         result = await loop._process_message(msg)
-
         assert result is not None
         assert "Hello" in result.content
 

@@ -1,5 +1,3 @@
-"""Comprehensive tests for web tools (web_search and web_fetch)."""
-
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -54,28 +52,36 @@ class TestNormalize:
 
 class TestValidateUrl:
     def test_valid_http(self):
-        valid, _ = _validate_url("http://example.com")
+        with patch(
+            "nanobot.agent.tools.web.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.216.34", 80))],
+        ):
+            valid, _, _ = _validate_url("http://example.com")
         assert valid
 
     def test_valid_https(self):
-        valid, _ = _validate_url("https://example.com/path?q=1")
+        with patch(
+            "nanobot.agent.tools.web.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.216.34", 443))],
+        ):
+            valid, _, _ = _validate_url("https://example.com/path?q=1")
         assert valid
 
     def test_rejects_ftp(self):
-        valid, msg = _validate_url("ftp://example.com")
+        valid, msg, _ = _validate_url("ftp://example.com")
         assert not valid
         assert "ftp" in msg
 
     def test_rejects_missing_domain(self):
-        valid, msg = _validate_url("https://")
+        valid, msg, _ = _validate_url("https://")
         assert not valid
 
     def test_rejects_non_url(self):
-        valid, msg = _validate_url("not-a-url")
+        valid, msg, _ = _validate_url("not-a-url")
         assert not valid
 
     def test_rejects_empty_string(self):
-        valid, _ = _validate_url("")
+        valid, _, _ = _validate_url("")
         assert not valid
 
 
@@ -109,16 +115,13 @@ class TestWebSearchTool:
             }
         }
         mock_response.raise_for_status = MagicMock()
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
             tool = WebSearchTool(api_key="test-key")
             result = await tool.execute("python")
-
         assert "Python.org" in result
         assert "https://python.org" in result
 
@@ -127,25 +130,20 @@ class TestWebSearchTool:
         mock_response = MagicMock()
         mock_response.json.return_value = {"web": {"results": []}}
         mock_response.raise_for_status = MagicMock()
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
             tool = WebSearchTool(api_key="test-key")
             result = await tool.execute("xyzzy_not_a_real_query")
-
         assert "No results" in result
 
     @pytest.mark.asyncio
     async def test_count_capped_at_10(self):
-        """count parameter should be capped at 10."""
         mock_response = MagicMock()
         mock_response.json.return_value = {"web": {"results": []}}
         mock_response.raise_for_status = MagicMock()
-
         captured_params = {}
 
         async def fake_get(url, params=None, headers=None, timeout=None):
@@ -156,11 +154,9 @@ class TestWebSearchTool:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = fake_get
-
         with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
             tool = WebSearchTool(api_key="test-key")
             await tool.execute("test", count=50)
-
         assert captured_params.get("count") == 10
 
     @pytest.mark.asyncio
@@ -169,11 +165,9 @@ class TestWebSearchTool:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(side_effect=Exception("network error"))
-
         with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
             tool = WebSearchTool(api_key="test-key")
             result = await tool.execute("test")
-
         assert "Error" in result
 
     @pytest.mark.asyncio
@@ -213,12 +207,10 @@ class TestWebFetchTool:
         mock_response.status_code = 200
         mock_response.url = "https://example.com"
         mock_response.json = MagicMock(side_effect=ValueError)
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with (
             patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
             patch(
@@ -228,7 +220,6 @@ class TestWebFetchTool:
         ):
             tool = WebFetchTool()
             result = await tool.execute("https://example.com")
-
         data = json.loads(result)
         assert "text" in data
         assert "Hello world" in data["text"]
@@ -242,12 +233,10 @@ class TestWebFetchTool:
         mock_response.raise_for_status = MagicMock()
         mock_response.status_code = 200
         mock_response.url = "https://api.example.com/data"
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with (
             patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
             patch(
@@ -257,7 +246,6 @@ class TestWebFetchTool:
         ):
             tool = WebFetchTool()
             result = await tool.execute("https://api.example.com/data")
-
         data = json.loads(result)
         assert data["extractor"] == "json"
         assert "key" in data["text"]
@@ -272,12 +260,10 @@ class TestWebFetchTool:
         mock_response.status_code = 200
         mock_response.url = "https://example.com"
         mock_response.json = MagicMock(side_effect=ValueError)
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with (
             patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
             patch(
@@ -287,7 +273,6 @@ class TestWebFetchTool:
         ):
             tool = WebFetchTool(max_chars=50000)
             result = await tool.execute("https://example.com")
-
         data = json.loads(result)
         assert data["truncated"] is True
         assert len(data["text"]) <= 50000
@@ -298,11 +283,9 @@ class TestWebFetchTool:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
-
         with patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client):
             tool = WebFetchTool()
             result = await tool.execute("https://example.com")
-
         data = json.loads(result)
         assert "error" in data
 
@@ -315,12 +298,10 @@ class TestWebFetchTool:
         mock_response.status_code = 200
         mock_response.url = "https://example.com"
         mock_response.json = MagicMock(side_effect=ValueError)
-
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_response)
-
         with (
             patch("nanobot.agent.tools.web.httpx.AsyncClient", return_value=mock_client),
             patch(
@@ -330,7 +311,6 @@ class TestWebFetchTool:
         ):
             tool = WebFetchTool()
             result = await tool.execute("https://example.com", extract_mode="text")
-
         data = json.loads(result)
         assert "Hello" in data["text"]
 
@@ -342,7 +322,7 @@ class TestValidateUrlMocked:
             "nanobot.agent.tools.web.socket.getaddrinfo",
             return_value=[(None, None, None, None, ("192.168.1.1", 80))],
         ):
-            valid, msg = _validate_url("http://internal.com")
+            valid, msg, _ = _validate_url("http://internal.com")
             assert not valid
             assert "Private/reserved" in msg
 
@@ -352,14 +332,12 @@ class TestValidateUrlMocked:
             "nanobot.agent.tools.web.socket.getaddrinfo",
             return_value=[(None, None, None, None, ("127.0.0.1", 80))],
         ):
-            valid, msg = _validate_url("http://my-loopback.com")
+            valid, msg, _ = _validate_url("http://my-loopback.com")
             assert not valid
             assert "protected" in msg or "Private/reserved" in msg
 
 
 class TestWebFetchMarkdownConversion:
-    """Test the _to_markdown helper."""
-
     def test_converts_headings(self):
         tool = WebFetchTool()
         html = "<h1>Title</h1><h2>Section</h2>"

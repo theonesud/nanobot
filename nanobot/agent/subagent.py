@@ -1,30 +1,30 @@
-"""Subagent manager for background task execution."""
-
 import asyncio
 import json
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from nanobot.agent.auditor import CommandAuditor
-    from nanobot.config.schema import ExecToolConfig
-
 from loguru import logger
 
+from nanobot.agent.auditor import CommandAuditor
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider
+from nanobot.utils.database import Database
+from nanobot.utils.helpers import get_model_pricing, strip_think
+
+if TYPE_CHECKING:
+    pass
 
 
 class SubagentManager:
-    """Manages background subagent execution."""
-
     def __init__(
         self,
         provider: LLMProvider,
@@ -38,8 +38,6 @@ class SubagentManager:
         restrict_to_workspace: bool = False,
         auditor: "CommandAuditor | None" = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
-
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
@@ -49,16 +47,12 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
-        from nanobot.agent.auditor import CommandAuditor
-
         self._auditor = auditor or CommandAuditor(provider=self.provider, model=self.model)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
-        self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+        self._session_tasks: dict[str, set[str]] = {}
         self.max_iterations = 15
-        from nanobot.utils.database import Database
-
         self.db = Database(workspace)
-        self.daily_budget = 5.0  # Default $5.00 daily budget
+        self.daily_budget = 5.0
 
     async def spawn(
         self,
@@ -68,11 +62,9 @@ class SubagentManager:
         origin_chat_id: str = "direct",
         session_key: str | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
-
         bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin))
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -86,22 +78,14 @@ class SubagentManager:
                     del self._session_tasks[session_key]
 
         bg_task.add_done_callback(_cleanup)
-
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
         return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
 
     async def _run_subagent(
-        self,
-        task_id: str,
-        task: str,
-        label: str,
-        origin: dict[str, str],
+        self, task_id: str, task: str, label: str, origin: dict[str, str]
     ) -> None:
-        """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
-
         try:
-            # Build subagent tools (no message tool, no spawn tool)
             tools = ToolRegistry()
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -120,23 +104,16 @@ class SubagentManager:
             )
             tools.register(WebSearchTool(api_key=self.brave_api_key))
             tools.register(WebFetchTool())
-
-            # Build messages with subagent-specific prompt
             system_prompt = self._build_subagent_prompt(task)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-
-            # Run agent loop (limited iterations)
             max_iterations = self.max_iterations
             iteration = 0
             final_result: str | None = None
-
             while iteration < max_iterations:
                 iteration += 1
-
-                # Budget enforcement (check before next LLM call)
                 daily_total = self.db.get_daily_cost()
                 if daily_total > self.daily_budget:
                     logger.critical(
@@ -144,12 +121,8 @@ class SubagentManager:
                         daily_total,
                         self.daily_budget,
                     )
-                    final_result = (
-                        f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. "
-                        "Subagent stopping."
-                    )
+                    final_result = f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. Subagent stopping."
                     break
-
                 response = await self.provider.chat(
                     messages=messages,
                     tools=tools.get_definitions(),
@@ -157,17 +130,11 @@ class SubagentManager:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
-
-                # Log tokens and cost (using the main agent loop pricing logic)
                 if response.usage:
-                    from nanobot.utils.helpers import get_model_pricing
-
                     p_tokens = response.usage.get("prompt_tokens", 0)
                     c_tokens = response.usage.get("completion_tokens", 0)
                     input_rate, output_rate = get_model_pricing(self.model)
-                    cost = (
-                        p_tokens / 1_000_000.0 * input_rate + c_tokens / 1_000_000.0 * output_rate
-                    )
+                    cost = p_tokens / 1000000.0 * input_rate + c_tokens / 1000000.0 * output_rate
                     self.db.log_cost(
                         f"subagent:{task_id}",
                         self.provider.__class__.__name__,
@@ -176,9 +143,7 @@ class SubagentManager:
                         c_tokens,
                         cost,
                     )
-
                 if response.has_tool_calls:
-                    # Add assistant message with tool calls
                     tool_call_dicts = [
                         {
                             "id": tc.id,
@@ -197,8 +162,6 @@ class SubagentManager:
                             "tool_calls": tool_call_dicts,
                         }
                     )
-
-                    # Execute tools in parallel
                     results = await asyncio.gather(
                         *[
                             tools.execute(
@@ -206,14 +169,11 @@ class SubagentManager:
                                 tc.arguments,
                                 channel=origin["channel"],
                                 chat_id=origin["chat_id"],
-                                # Subagents don't have a message tool yet, but we pass metadata anyway
-                                # so that ExecTool can trigger approval requests on the bus.
                             )
                             for tc in response.tool_calls
                         ]
                     )
-
-                    for tool_call, result in zip(response.tool_calls, results):
+                    for tool_call, result in zip(response.tool_calls, results, strict=False):
                         messages.append(
                             {
                                 "role": "tool",
@@ -223,106 +183,46 @@ class SubagentManager:
                             }
                         )
                 else:
-                    from nanobot.agent.loop import AgentLoop
-
-                    final_result = AgentLoop._strip_think(response.content)
+                    final_result = strip_think(response.content)
                     break
-
             if final_result is None:
                 final_result = "Task completed but no final response was generated."
-
             logger.info("Subagent [{}] completed successfully", task_id)
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
-
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             logger.error("Subagent [{}] failed: {}", task_id, e)
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
 
     async def _announce_result(
-        self,
-        task_id: str,
-        label: str,
-        task: str,
-        result: str,
-        origin: dict[str, str],
-        status: str,
+        self, task_id: str, label: str, task: str, result: str, origin: dict[str, str], status: str
     ) -> None:
-        """Announce the subagent result to the main agent via the message bus."""
         status_text = "completed successfully" if status == "ok" else "failed"
-
-        announce_content = f"""[Subagent '{label}' {status_text}]
-
-Task: {task}
-
-Result:
-{result}
-
-Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
-
-        # Inject as system message to trigger main agent
+        announce_content = f"""[Subagent '{label}' {status_text}]\n\nTask: {task}\n\nResult:\n{result}\n\nSummarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
             chat_id=f"{origin['channel']}:{origin['chat_id']}",
             content=announce_content,
         )
-
         await self.bus.publish_inbound(msg)
         logger.debug(
             "Subagent [{}] announced result to {}:{}", task_id, origin["channel"], origin["chat_id"]
         )
 
     def _build_subagent_prompt(self, task: str) -> str:
-        """Build a focused system prompt for the subagent."""
-        from datetime import datetime
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = time.strftime("%Z") or "UTC"
-
-        return f"""# Subagent
-
-## Current Time
-{now} ({tz})
-
-You are a subagent spawned by the main agent to complete a specific task.
-
-## Rules
-1. Stay focused - complete only the assigned task, nothing else
-2. Your final response will be reported back to the main agent
-3. Do not initiate conversations or take on side tasks
-4. Be concise but informative in your findings
-
-## What You Can Do
-- Read and write files in the workspace
-- Execute shell commands
-- Search the web and fetch web pages
-- Complete the task thoroughly
-
-## What You Cannot Do
-- Send messages directly to users (no message tool available)
-- Spawn other subagents
-- Access the main agent's conversation history
-
-## Workspace
-Your workspace is at: {self.workspace}
-Skills are available at: {self.workspace}/skills/ (read SKILL.md files as needed)
-
-When you have completed the task, provide a clear summary of your findings or actions."""
+        return f"# Subagent\n\n## Current Time\n{now} ({tz})\n\nYou are a subagent spawned by the main agent to complete a specific task.\n\n## Rules\n1. Stay focused - complete only the assigned task, nothing else\n2. Your final response will be reported back to the main agent\n3. Do not initiate conversations or take on side tasks\n4. Be concise but informative in your findings\n\n## What You Can Do\n- Read and write files in the workspace\n- Execute shell commands\n- Search the web and fetch web pages\n- Complete the task thoroughly\n\n## What You Cannot Do\n- Send messages directly to users (no message tool available)\n- Spawn other subagents\n- Access the main agent's conversation history\n\n## Workspace\nYour workspace is at: {self.workspace}\nSkills are available at: {self.workspace}/skills/ (read SKILL.md files as needed)\n\nWhen you have completed the task, provide a clear summary of your findings or actions."
 
     async def cancel_by_session(self, session_key: str) -> int:
-        """Cancel all subagents for the given session. Returns count cancelled."""
         tasks = [
             self._running_tasks[tid]
             for tid in self._session_tasks.get(session_key, [])
-            if tid in self._running_tasks and not self._running_tasks[tid].done()
+            if tid in self._running_tasks and (not self._running_tasks[tid].done())
         ]
         for t in tasks:
             t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         return len(tasks)
-
-    def get_running_count(self) -> int:
-        """Return the number of currently running subagents."""
-        return len(self._running_tasks)

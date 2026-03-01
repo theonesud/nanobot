@@ -7,7 +7,6 @@ runner = CliRunner()
 
 def test_cron_add_rejects_invalid_timezone(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
-
     result = runner.invoke(
         app,
         [
@@ -23,7 +22,6 @@ def test_cron_add_rejects_invalid_timezone(monkeypatch, tmp_path) -> None:
             "America/Vancovuer",
         ],
     )
-
     assert result.exit_code == 1
     assert "Error: unknown timezone 'America/Vancovuer'" in result.stdout
     assert not (tmp_path / "cron" / "jobs.json").exists()

@@ -1,5 +1,4 @@
-"""Tests for utils/helpers.py."""
-
+from datetime import datetime
 from pathlib import Path
 
 from nanobot.utils.helpers import (
@@ -28,9 +27,6 @@ class TestTimestamp:
     def test_returns_iso_string(self):
         ts = timestamp()
         assert isinstance(ts, str)
-        # Should parse as datetime
-        from datetime import datetime
-
         parsed = datetime.fromisoformat(ts)
         assert parsed is not None
 
@@ -101,9 +97,7 @@ class TestSyncWorkspaceTemplates:
         memory_file = tmp_path / "memory" / "MEMORY.md"
         memory_file.parent.mkdir(parents=True, exist_ok=True)
         memory_file.write_text("custom content")
-
         sync_workspace_templates(tmp_path, silent=True)
-        # Should still contain our text, not overwritten
         assert "custom content" in memory_file.read_text()
 
     def test_returns_list_of_created_files(self, tmp_path):

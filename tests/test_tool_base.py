@@ -1,5 +1,3 @@
-"""Tests for agent/tools/base.py — Tool base class."""
-
 from typing import Any
 
 import pytest
@@ -8,8 +6,6 @@ from nanobot.agent.tools.base import Tool
 
 
 class ConcreteToolSimple(Tool):
-    """A minimal concrete tool for testing."""
-
     @property
     def name(self) -> str:
         return "simple_tool"
@@ -22,10 +18,7 @@ class ConcreteToolSimple(Tool):
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "count": {"type": "integer"},
-            },
+            "properties": {"text": {"type": "string"}, "count": {"type": "integer"}},
             "required": ["text"],
         }
 
@@ -65,7 +58,7 @@ class TestToolValidateParams:
         tool = ConcreteToolSimple()
         errors = tool.validate_params({})
         assert len(errors) > 0
-        assert any("text" in e for e in errors)
+        assert any(("text" in e for e in errors))
 
     def test_wrong_type_string_for_integer(self):
         tool = ConcreteToolSimple()
@@ -78,10 +71,9 @@ class TestToolValidateParams:
         assert errors == []
 
     def test_extra_params_allowed(self):
-        """Extra parameters not in schema should not be flagged, they might be context kwargs."""
         tool = ConcreteToolSimple()
         errors = tool.validate_params({"text": "hello", "extra_context": "whatever"})
-        assert errors == []  # extra is fine
+        assert errors == []
 
     @pytest.mark.asyncio
     async def test_execute_basic(self):

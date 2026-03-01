@@ -1,17 +1,17 @@
-"""Shell execution tool."""
-
 import asyncio
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.tools.base import Tool
+from nanobot.bus.events import ApprovalRequest
 
 
 class ExecTool(Tool):
-    """Tool to execute shell commands."""
-
     def __init__(
         self,
         working_dir: str | None = None,
@@ -26,16 +26,16 @@ class ExecTool(Tool):
         self.timeout = timeout
         self.working_dir = working_dir
         self.deny_patterns = deny_patterns or [
-            r"rm\s+-[rf]{1,2}",  # rm -r, rm -rf, rm -fr
-            r"del\s+/[fq]",  # del /f, del /q
-            r"rmdir\s+/s",  # rmdir /s
-            r"(?:^|[;&|]\s*)format",  # format (as standalone command only)
-            r"(mkfs|diskpart)",  # disk operations
-            r"dd\s+if=",  # dd
-            r">\s*/dev/sd",  # write to disk
-            r"(shutdown|reboot|poweroff)",  # system power
-            r":\(\)\s*\{.*\};\s*:",  # fork bomb
-            r"sudo",  # sudo
+            "rm\\s+-[rf]{1,2}",
+            "del\\s+/[fq]",
+            "rmdir\\s+/s",
+            "(?:^|[;&|]\\s*)format",
+            "(mkfs|diskpart)",
+            "dd\\s+if=",
+            ">\\s*/dev/sd",
+            "(shutdown|reboot|poweroff)",
+            ":\\(\\)\\s*\\{.*\\};\\s*:",
+            "sudo",
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
@@ -70,30 +70,19 @@ class ExecTool(Tool):
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
-
-        # Phase 2: OpenCode Auditor check
         if self.auditor:
-            import uuid
-
-            from loguru import logger
-
             logger.info("Auditing command: {}", command)
             verdict = await self.auditor.evaluate(command)
             if verdict == "UNSAFE":
                 logger.warning("Auditor flagged command as UNSAFE: {}", command)
                 if self.bus:
-                    from nanobot.bus.events import ApprovalRequest
-
                     request_id = str(uuid.uuid4())
-
-                    # Notify user we are waiting for approval if possible
                     if factory := kwargs.get("outbound_msg_factory"):
                         await self.bus.publish_outbound(
                             factory(
                                 content=f"⚠️ Auditor flagged this command as potentially unsafe. Please approve or reject:\n`{command}`"
                             )
                         )
-
                     req = ApprovalRequest(
                         id=request_id,
                         channel=kwargs.get("channel", "cli"),
@@ -110,16 +99,13 @@ class ExecTool(Tool):
                         },
                     )
                     await self.bus.publish_approval_request(req)
-
-                    # Wait for approval
                     response = await self.bus.wait_for_approval(request_id)
                     if response and response.approved:
                         logger.info("Command approved by user.")
                         return await self._execute_safe(command, working_dir)
-                    return f"Error: Command rejected by user or timed out: {response.reason if response else 'timeout'}"
+                    return f"Error: Command rejected by user or timed out: {(response.reason if response else 'timeout')}"
                 else:
                     return f"Error: Command blocked by Auditor (UNSAFE) and no interactive channel available for approval (channel: {kwargs.get('channel')})."
-
         return await self._execute_safe(command, working_dir)
 
     async def _execute_safe(self, command: str, working_dir: str | None) -> str:
@@ -127,7 +113,6 @@ class ExecTool(Tool):
         env = os.environ.copy()
         if self.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
-
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -136,74 +121,52 @@ class ExecTool(Tool):
                 cwd=cwd,
                 env=env,
             )
-
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
             except asyncio.TimeoutError:
                 process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
                 return f"Error: Command timed out after {self.timeout} seconds"
-
             output_parts = []
-
             if stdout:
                 output_parts.append(stdout.decode("utf-8", errors="replace"))
-
             if stderr:
                 stderr_text = stderr.decode("utf-8", errors="replace")
                 if stderr_text.strip():
                     output_parts.append(f"STDERR:\n{stderr_text}")
-
             if process.returncode != 0:
                 output_parts.append(f"\nExit code: {process.returncode}")
-
             result = "\n".join(output_parts) if output_parts else "(no output)"
-
-            # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
-
             return result
-
         except Exception as e:
             return f"Error executing command: {str(e)}"
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
         lower = cmd.lower()
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
-
         if self.allow_patterns:
-            if not any(re.search(p, lower) for p in self.allow_patterns):
+            if not any((re.search(p, lower) for p in self.allow_patterns)):
                 return "Error: Command blocked by safety guard (not in allowlist)"
-
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
                 return "Error: Command blocked by safety guard (path traversal detected)"
-
             cwd_path = Path(cwd).resolve()
-
-            win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
-            # Only match absolute paths — avoid false positives on relative
-            # paths like ".venv/bin/python" where "/bin/python" would be
-            # incorrectly extracted by the old pattern.
-            posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
-
+            win_paths = re.findall("[A-Za-z]:\\\\[^\\\\\\\"']+", cmd)
+            posix_paths = re.findall("(?:^|[\\s|>])(/[^\\s\\\"'>]+)", cmd)
             for raw in win_paths + posix_paths:
                 try:
                     p = Path(raw.strip()).resolve()
                 except Exception:
                     continue
-                if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
+                if p.is_absolute() and cwd_path not in p.parents and (p != cwd_path):
                     return "Error: Command blocked by safety guard (path outside working dir)"
-
         return None

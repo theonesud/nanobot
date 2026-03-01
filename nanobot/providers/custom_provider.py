@@ -1,5 +1,3 @@
-"""Direct OpenAI-compatible provider — bypasses LiteLLM."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -54,7 +52,7 @@ class CustomProvider(LLMProvider):
                 if isinstance(tc.function.arguments, str)
                 else tc.function.arguments,
             )
-            for tc in (msg.tool_calls or [])
+            for tc in msg.tool_calls or []
         ]
         u = response.usage
         return LLMResponse(

@@ -1,5 +1,3 @@
-"""Auditor for security evaluation of shell commands."""
-
 from typing import Literal
 
 from loguru import logger
@@ -8,20 +6,10 @@ from nanobot.providers.base import LLMProvider
 
 
 class CommandAuditor:
-    """
-    The Auditor is a secondary LLM pipeline that evaluates
-    shell commands for destructive actions.
-    """
-
     def __init__(self, provider: LLMProvider, model: str):
         self.provider = provider
         self.model = model
-        self.system_prompt = (
-            "You are a strict security auditor. Your ONLY job is to evaluate if a shell command "
-            "is SAFE or UNSAFE to execute on the host system. "
-            "Deny any command that uses 'rm -rf', 'sudo', 'mkfs', 'dd', or attempts to access secrets/keys. "
-            "Reply with exactly one word: SAFE or UNSAFE."
-        )
+        self.system_prompt = "You are a strict security auditor. Your ONLY job is to evaluate if a shell command is SAFE or UNSAFE to execute on the host system. Deny any command that uses 'rm -rf', 'sudo', 'mkfs', 'dd', or attempts to access secrets/keys. Reply with exactly one word: SAFE or UNSAFE."
 
     async def evaluate(self, command: str) -> Literal["SAFE", "UNSAFE"]:
         try:

@@ -1,5 +1,3 @@
-"""Web tools for search and content fetching."""
-
 import html
 import ipaddress
 import json
@@ -10,47 +8,39 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from readability import Document
 
 from nanobot.agent.tools.base import Tool
 
-# Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
-MAX_REDIRECTS = 5  # Limit redirects to prevent DoS attacks
+MAX_REDIRECTS = 5
 
 
 def _strip_tags(text: str) -> str:
-    """Remove HTML tags and decode entities."""
-    text = re.sub(r"<script[\s\S]*?</script>", "", text, flags=re.I)
-    text = re.sub(r"<style[\s\S]*?</style>", "", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub("<script[\\s\\S]*?</script>", "", text, flags=re.I)
+    text = re.sub("<style[\\s\\S]*?</style>", "", text, flags=re.I)
+    text = re.sub("<[^>]+>", "", text)
     return html.unescape(text).strip()
 
 
 def _normalize(text: str) -> str:
-    """Normalize whitespace."""
-    text = re.sub(r"[ \t]+", " ", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub("[ \\t]+", " ", text)
+    return re.sub("\\n{3,}", "\n\n", text).strip()
 
 
 def _validate_url(url: str) -> tuple[bool, str, str | None]:
-    """Validate a URL for fetching and return (is_valid, error_msg, resolved_ip)."""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            return False, f"Only http/https URLs allowed, got '{parsed.scheme or 'none'}'", None
+            return (False, f"Only http/https URLs allowed, got '{parsed.scheme or 'none'}'", None)
         if not parsed.netloc:
-            return False, "Missing domain", None
-        # SSRF protection: block private/reserved IPs
+            return (False, "Missing domain", None)
         hostname = parsed.hostname or ""
         if hostname.lower() in ("localhost", ""):
-            return False, "Localhost URLs not allowed", None
-
+            return (False, "Localhost URLs not allowed", None)
         try:
-            # Resolve all IPs for the hostname to prevent DNS rebinding or IP-based bypasses
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
             ip_infos = socket.getaddrinfo(hostname, port)
-
-            # We'll use the first resolved IP for the actual request to prevent rebinding
             first_ip = None
             for _, _, _, _, sockaddr in ip_infos:
                 ip_addr = sockaddr[0]
@@ -58,22 +48,17 @@ def _validate_url(url: str) -> tuple[bool, str, str | None]:
                     first_ip = ip_addr
                 ip = ipaddress.ip_address(ip_addr)
                 if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                    return False, f"Private/reserved IP address access blocked: {ip_addr}", None
-
-            return True, "", first_ip
+                    return (False, f"Private/reserved IP address access blocked: {ip_addr}", None)
+            return (True, "", first_ip)
         except socket.gaierror:
-            # Resolution failed, might be an invalid domain or local restricted name
-            return False, f"Could not resolve hostname: {hostname}", None
+            return (False, f"Could not resolve hostname: {hostname}", None)
         except ValueError:
-            return False, "Invalid IP address format", None
-
+            return (False, "Invalid IP address format", None)
     except Exception as e:
-        return False, str(e), None
+        return (False, str(e), None)
 
 
 class WebSearchTool(Tool):
-    """Search the web using Brave Search API."""
-
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
     parameters = {
@@ -96,17 +81,11 @@ class WebSearchTool(Tool):
 
     @property
     def api_key(self) -> str:
-        """Resolve API key at call time so env/config changes are picked up."""
         return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         if not self.api_key:
-            return (
-                "Error: Brave Search API key not configured. "
-                "Set it in ~/.nanobot/config.json under tools.web.search.apiKey "
-                "(or export BRAVE_API_KEY), then restart the gateway."
-            )
-
+            return "Error: Brave Search API key not configured. Set it in ~/.nanobot/config.json under tools.web.search.apiKey (or export BRAVE_API_KEY), then restart the gateway."
         try:
             n = min(max(count or self.max_results, 1), 10)
             async with httpx.AsyncClient() as client:
@@ -117,11 +96,9 @@ class WebSearchTool(Tool):
                     timeout=10.0,
                 )
                 r.raise_for_status()
-
             results = r.json().get("web", {}).get("results", [])
             if not results:
                 return f"No results for: {query}"
-
             lines = [f"Results for: {query}\n"]
             for i, item in enumerate(results[:n], 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
@@ -133,8 +110,6 @@ class WebSearchTool(Tool):
 
 
 class WebFetchTool(Tool):
-    """Fetch and extract content from a URL using Readability."""
-
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
     parameters = {
@@ -153,52 +128,32 @@ class WebFetchTool(Tool):
     async def execute(
         self, url: str, extract_mode: str = "markdown", max_chars: int | None = None, **kwargs: Any
     ) -> str:
-        from readability import Document
-
         max_chars = max_chars or self.max_chars
-
-        # Validate URL before fetching and get the resolved IP to prevent DNS rebinding
         is_valid, error_msg, safe_ip = _validate_url(url)
         if not is_valid:
             return json.dumps(
                 {"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False
             )
-
         try:
             parsed = urlparse(url)
-            # Use the resolved safe IP for the connection to prevent DNS rebinding
-            # while keeping the original hostname in the Host header for SNI and routing.
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
             target_url = parsed._replace(
                 netloc=f"{safe_ip}:{port}" if parsed.port else safe_ip
             ).geturl()
-
             headers = {"User-Agent": USER_AGENT, "Host": parsed.hostname}
-
             async with httpx.AsyncClient(
                 follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0, verify=False
             ) as client:
-                # Note: verify=False is used here because we are connecting to an IP.
-                # In a production environment, you should use a custom transport or
-                # a proper SNI-aware mechanism. For Nanobot, this prevents DNS rebinding
-                # while allowing the request to proceed.
                 r = await client.get(target_url, headers=headers)
                 r.raise_for_status()
-
-            # 1. Check content length if available
             content_length = r.headers.get("content-length")
-            if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+            if content_length and int(content_length) > 10 * 1024 * 1024:
                 return json.dumps(
                     {"error": "File too large to fetch (over 10MB)", "url": url}, ensure_ascii=False
                 )
-
-            body_text = r.text
             ctype = r.headers.get("content-type", "")
-
-            # JSON
             if "application/json" in ctype:
-                text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
-            # HTML
+                text, extractor = (json.dumps(r.json(), indent=2, ensure_ascii=False), "json")
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
                 doc = Document(r.text)
                 content = (
@@ -209,12 +164,10 @@ class WebFetchTool(Tool):
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
             else:
-                text, extractor = r.text, "raw"
-
+                text, extractor = (r.text, "raw")
             truncated = len(text) > max_chars
             if truncated:
                 text = text[:max_chars]
-
             return json.dumps(
                 {
                     "url": url,
@@ -231,23 +184,21 @@ class WebFetchTool(Tool):
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
 
     def _to_markdown(self, html: str) -> str:
-        """Convert HTML to markdown."""
-        # Convert links, headings, lists before stripping tags
         text = re.sub(
-            r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
+            "<a\\s+[^>]*href=[\"\\']([^\"\\']+)[\"\\'][^>]*>([\\s\\S]*?)</a>",
             lambda m: f"[{_strip_tags(m[2])}]({m[1]})",
             html,
             flags=re.I,
         )
         text = re.sub(
-            r"<h([1-6])[^>]*>([\s\S]*?)</h\1>",
+            "<h([1-6])[^>]*>([\\s\\S]*?)</h\\1>",
             lambda m: f"\n{'#' * int(m[1])} {_strip_tags(m[2])}\n",
             text,
             flags=re.I,
         )
         text = re.sub(
-            r"<li[^>]*>([\s\S]*?)</li>", lambda m: f"\n- {_strip_tags(m[1])}", text, flags=re.I
+            "<li[^>]*>([\\s\\S]*?)</li>", lambda m: f"\n- {_strip_tags(m[1])}", text, flags=re.I
         )
-        text = re.sub(r"</(p|div|section|article)>", "\n\n", text, flags=re.I)
-        text = re.sub(r"<(br|hr)\s*/?>", "\n", text, flags=re.I)
+        text = re.sub("</(p|div|section|article)>", "\n\n", text, flags=re.I)
+        text = re.sub("<(br|hr)\\s*/?>", "\n", text, flags=re.I)
         return _normalize(_strip_tags(text))

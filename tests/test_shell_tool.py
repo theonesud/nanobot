@@ -1,5 +1,3 @@
-"""Comprehensive tests for the ExecTool (shell.py)."""
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,8 +11,8 @@ class TestExecToolInit:
         assert len(tool.deny_patterns) > 0
 
     def test_custom_deny_patterns(self):
-        tool = ExecTool(deny_patterns=[r"\btest\b"])
-        assert tool.deny_patterns == [r"\btest\b"]
+        tool = ExecTool(deny_patterns=["\\btest\\b"])
+        assert tool.deny_patterns == ["\\btest\\b"]
 
     def test_default_allow_patterns_empty(self):
         tool = ExecTool()
@@ -30,8 +28,6 @@ class TestExecToolInit:
 
 
 class TestGuardCommand:
-    """Test _guard_command safety checks."""
-
     def test_allows_safe_echo(self):
         tool = ExecTool()
         result = tool._guard_command("echo hello", "/tmp")
@@ -79,12 +75,12 @@ class TestGuardCommand:
         assert result is not None
 
     def test_allow_patterns_pass(self):
-        tool = ExecTool(allow_patterns=[r"\bls\b"])
+        tool = ExecTool(allow_patterns=["\\bls\\b"])
         result = tool._guard_command("ls -la", "/tmp")
         assert result is None
 
     def test_allow_patterns_block_when_not_matching(self):
-        tool = ExecTool(allow_patterns=[r"\bls\b"])
+        tool = ExecTool(allow_patterns=["\\bls\\b"])
         result = tool._guard_command("cat file.txt", "/tmp")
         assert result is not None
         assert "allowlist" in result
@@ -102,8 +98,6 @@ class TestGuardCommand:
 
 
 class TestExecToolExecute:
-    """Test execute() method."""
-
     @pytest.mark.asyncio
     async def test_execute_simple_command(self):
         tool = ExecTool(timeout=10)
@@ -114,14 +108,12 @@ class TestExecToolExecute:
     async def test_execute_command_with_stderr(self):
         tool = ExecTool(timeout=10)
         result = await tool.execute("echo err >&2")
-        # Should capture something — either via stdout or STDERR header
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_execute_exit_code_nonzero(self):
         tool = ExecTool(timeout=10)
         result = await tool.execute("exit 1", working_dir="/tmp")
-        # Should include exit code info
         assert "Exit code" in result or result == "(no output)"
 
     @pytest.mark.asyncio
@@ -145,14 +137,12 @@ class TestExecToolExecute:
     @pytest.mark.asyncio
     async def test_execute_long_output_truncated(self):
         tool = ExecTool(timeout=10)
-        # Generate output > 10000 chars
         result = await tool.execute("python3 -c \"print('x' * 20000)\"")
         assert "truncated" in result
 
     @pytest.mark.asyncio
     async def test_execute_no_output(self):
         tool = ExecTool(timeout=10)
-        # A command with no output
         result = await tool.execute("true")
         assert result == "(no output)"
 

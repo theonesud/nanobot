@@ -25,10 +25,7 @@ class SampleTool(Tool):
                     "type": "object",
                     "properties": {
                         "tag": {"type": "string"},
-                        "flags": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
+                        "flags": {"type": "array", "items": {"type": "string"}},
                     },
                     "required": ["tag"],
                 },
@@ -49,30 +46,23 @@ def test_validate_params_missing_required() -> None:
 def test_validate_params_type_and_range() -> None:
     tool = SampleTool()
     errors = tool.validate_params({"query": "hi", "count": 0})
-    assert any("count must be >= 1" in e for e in errors)
-
+    assert any(("count must be >= 1" in e for e in errors))
     errors = tool.validate_params({"query": "hi", "count": "2"})
-    assert any("count should be integer" in e for e in errors)
+    assert any(("count should be integer" in e for e in errors))
 
 
 def test_validate_params_enum_and_min_length() -> None:
     tool = SampleTool()
     errors = tool.validate_params({"query": "h", "count": 2, "mode": "slow"})
-    assert any("query must be at least 2 chars" in e for e in errors)
-    assert any("mode must be one of" in e for e in errors)
+    assert any(("query must be at least 2 chars" in e for e in errors))
+    assert any(("mode must be one of" in e for e in errors))
 
 
 def test_validate_params_nested_object_and_array() -> None:
     tool = SampleTool()
-    errors = tool.validate_params(
-        {
-            "query": "hi",
-            "count": 2,
-            "meta": {"flags": [1, "ok"]},
-        }
-    )
-    assert any("missing required meta.tag" in e for e in errors)
-    assert any("meta.flags[0] should be string" in e for e in errors)
+    errors = tool.validate_params({"query": "hi", "count": 2, "meta": {"flags": [1, "ok"]}})
+    assert any(("missing required meta.tag" in e for e in errors))
+    assert any(("meta.flags[0] should be string" in e for e in errors))
 
 
 def test_validate_params_ignores_unknown_fields() -> None:

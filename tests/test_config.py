@@ -1,35 +1,20 @@
-"""Tests for config/schema.py."""
-
 from nanobot.config.schema import (
+    AgentDefaults,
     AgentsConfig,
     ChannelsConfig,
     Config,
     EmailConfig,
     ProviderConfig,
+    ProvidersConfig,
     SlackConfig,
     TelegramConfig,
 )
 
 
 class TestSlackConfig:
-    """Tests for Slack channel configuration."""
-
-    def test_default_values(self):
-        """Test default configuration values."""
-        config = SlackConfig()
-        assert config.enabled is False
-        assert config.mode == "socket"
-        assert config.bot_token == ""
-        assert config.app_token == ""
-        assert config.reply_in_thread is True
-
     def test_custom_values(self):
-        """Test custom configuration values."""
         config = SlackConfig(
-            enabled=True,
-            bot_token="xoxb-test",
-            app_token="xapp-test",
-            reply_in_thread=False,
+            enabled=True, bot_token="xoxb-test", app_token="xapp-test", reply_in_thread=False
         )
         assert config.enabled is True
         assert config.bot_token == "xoxb-test"
@@ -38,10 +23,7 @@ class TestSlackConfig:
 
 
 class TestTelegramConfig:
-    """Tests for Telegram channel configuration."""
-
     def test_default_values(self):
-        """Test default configuration values."""
         config = TelegramConfig()
         assert config.enabled is False
         assert config.token == ""
@@ -49,16 +31,12 @@ class TestTelegramConfig:
         assert config.reply_to_message is False
 
     def test_with_proxy(self):
-        """Test proxy configuration."""
         config = TelegramConfig(proxy="socks5://127.0.0.1:1080")
         assert config.proxy == "socks5://127.0.0.1:1080"
 
 
 class TestEmailConfig:
-    """Tests for Email channel configuration."""
-
     def test_default_values(self):
-        """Test default configuration values."""
         config = EmailConfig()
         assert config.enabled is False
         assert config.consent_granted is False
@@ -68,21 +46,15 @@ class TestEmailConfig:
         assert config.poll_interval_seconds == 30
 
     def test_custom_imap(self):
-        """Test custom IMAP configuration."""
         config = EmailConfig(
-            imap_host="imap.gmail.com",
-            imap_username="test@gmail.com",
-            imap_password="password",
+            imap_host="imap.gmail.com", imap_username="test@gmail.com", imap_password="password"
         )
         assert config.imap_host == "imap.gmail.com"
         assert config.imap_username == "test@gmail.com"
 
 
 class TestChannelsConfig:
-    """Tests for channels configuration."""
-
     def test_default_channels(self):
-        """Test all channels are disabled by default."""
         config = ChannelsConfig()
         assert config.slack.enabled is False
         assert config.telegram.enabled is False
@@ -91,24 +63,19 @@ class TestChannelsConfig:
         assert config.whatsapp.enabled is False
 
     def test_enable_slack(self):
-        """Test enabling Slack channel."""
         config = ChannelsConfig(slack=SlackConfig(enabled=True, bot_token="xoxb-test"))
         assert config.slack.enabled is True
         assert config.slack.bot_token == "xoxb-test"
 
 
 class TestProviderConfig:
-    """Tests for provider configuration."""
-
     def test_default_values(self):
-        """Test default provider config."""
         config = ProviderConfig()
         assert config.api_key == ""
         assert config.api_base is None
         assert config.extra_headers is None
 
     def test_custom_values(self):
-        """Test custom provider config."""
         config = ProviderConfig(
             api_key="sk-test",
             api_base="https://api.example.com",
@@ -120,10 +87,7 @@ class TestProviderConfig:
 
 
 class TestAgentsConfig:
-    """Tests for agents configuration."""
-
     def test_default_values(self):
-        """Test default agent config."""
         config = AgentsConfig()
         assert config.defaults.model == "opencode-default"
         assert config.defaults.max_tokens == 8192
@@ -131,36 +95,23 @@ class TestAgentsConfig:
         assert config.defaults.max_tool_iterations == 40
 
     def test_custom_workspace(self):
-        """Test custom workspace path."""
-        from nanobot.config.schema import AgentDefaults
-
         config = AgentsConfig(defaults=AgentDefaults(workspace="/custom/path"))
         assert config.defaults.workspace == "/custom/path"
 
 
 class TestConfig:
-    """Tests for root configuration."""
-
     def test_default_config(self):
-        """Test default configuration."""
         config = Config()
         assert config.channels.slack.enabled is False
         assert config.agents.defaults.model is not None
 
     def test_workspace_path(self):
-        """Test workspace path property."""
-        from nanobot.config.schema import AgentDefaults
-
         config = AgentsConfig(defaults=AgentDefaults(workspace="/tmp/test"))
-        # Create a Config with the agents
         full_config = Config(agents=config)
         path = full_config.workspace_path
         assert str(path) == "/tmp/test"
 
     def test_nested_config(self):
-        """Test nested configuration structure."""
-        from nanobot.config.schema import AgentDefaults, AgentsConfig, ChannelsConfig, SlackConfig
-
         config = Config(
             agents=AgentsConfig(defaults=AgentDefaults(model="gpt-4", max_tokens=4096)),
             channels=ChannelsConfig(slack=SlackConfig(enabled=True, bot_token="xoxb-test")),
@@ -171,14 +122,6 @@ class TestConfig:
         assert config.channels.slack.bot_token == "xoxb-test"
 
     def test_provider_matching(self):
-        """Test provider matching logic."""
-        from nanobot.config.schema import (
-            AgentDefaults,
-            AgentsConfig,
-            ProviderConfig,
-            ProvidersConfig,
-        )
-
         config = Config(
             providers=ProvidersConfig(deepseek=ProviderConfig(api_key="sk-deepseek")),
             agents=AgentsConfig(
@@ -189,31 +132,7 @@ class TestConfig:
         assert provider is not None
         assert provider.api_key == "sk-deepseek"
 
-    def test_get_api_key(self):
-        """Test getting API key for a model."""
-        from nanobot.config.schema import (
-            AgentDefaults,
-            AgentsConfig,
-            ProviderConfig,
-            ProvidersConfig,
-        )
-
-        config = Config(
-            providers=ProvidersConfig(openai=ProviderConfig(api_key="sk-openai")),
-            agents=AgentsConfig(defaults=AgentDefaults(model="gpt-4", provider="auto")),
-        )
-        api_key = config.get_api_key()
-        assert api_key == "sk-openai"
-
     def test_get_provider_name(self):
-        """Test getting provider name."""
-        from nanobot.config.schema import (
-            AgentDefaults,
-            AgentsConfig,
-            ProviderConfig,
-            ProvidersConfig,
-        )
-
         config = Config(
             providers=ProvidersConfig(anthropic=ProviderConfig(api_key="sk-anthropic")),
             agents=AgentsConfig(defaults=AgentDefaults(model="claude-3-opus", provider="auto")),

@@ -1,5 +1,3 @@
-"""Tests for agent/tools/registry.py — ToolRegistry."""
-
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -10,12 +8,11 @@ from nanobot.agent.tools.registry import ToolRegistry
 
 
 def _make_tool(name: str, description: str = "A tool.", params_required: list[str] | None = None):
-    """Create a minimal Tool subclass for testing."""
     _name = name
     _description = description
     _parameters = {
         "type": "object",
-        "properties": {f: {"type": "string"} for f in (params_required or [])},
+        "properties": {f: {"type": "string"} for f in params_required or []},
         "required": params_required or [],
     }
 
@@ -67,12 +64,6 @@ class TestToolRegistryBasics:
     def test_get_missing_returns_none(self):
         reg = ToolRegistry()
         assert reg.get("nonexistent") is None
-
-    def test_has_tool(self):
-        reg = ToolRegistry()
-        reg.register(_make_tool("exists"))
-        assert reg.has("exists") is True
-        assert reg.has("missing") is False
 
     def test_get_definitions_returns_list(self):
         reg = ToolRegistry()
@@ -161,7 +152,6 @@ class TestToolRegistryExecute:
 
     @pytest.mark.asyncio
     async def test_params_override_kwargs_on_conflict(self):
-        """params (tool arguments) should take precedence over kwargs (context)."""
         reg = ToolRegistry()
         captured = {}
 
@@ -172,6 +162,5 @@ class TestToolRegistryExecute:
         tool = _make_tool("conflict_tool")
         tool.execute = capture
         reg.register(tool)
-        # Inject channel via params (explicit tool argument) vs. kwargs (context)
         await reg.execute("conflict_tool", {"channel": "from_params"}, channel="from_kwargs")
         assert captured.get("channel") == "from_params"

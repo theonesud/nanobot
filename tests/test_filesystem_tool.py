@@ -1,5 +1,3 @@
-"""Comprehensive tests for filesystem tools (read_file, write_file, edit_file, list_dir)."""
-
 import pytest
 
 from nanobot.agent.tools.filesystem import (
@@ -161,7 +159,6 @@ class TestEditFileTool:
 
     @pytest.mark.asyncio
     async def test_edit_only_replaces_first(self, tmp_path):
-        """When there's exactly one match, it replaces just once."""
         f = tmp_path / "one.txt"
         f.write_text("foo bar")
         tool = EditFileTool(workspace=tmp_path)

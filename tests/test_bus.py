@@ -1,5 +1,3 @@
-"""Tests for bus/queue.py — MessageBus."""
-
 import asyncio
 
 import pytest
@@ -31,7 +29,6 @@ class TestMessageBus:
     async def test_multiple_outbound_messages_ordered(self, bus):
         await bus.publish_outbound(OutboundMessage(channel="x", chat_id="c", content="first"))
         await bus.publish_outbound(OutboundMessage(channel="x", chat_id="c", content="second"))
-
         m1 = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
         m2 = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
         assert m1.content == "first"

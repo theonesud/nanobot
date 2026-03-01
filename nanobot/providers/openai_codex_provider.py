@@ -1,5 +1,3 @@
-"""OpenAI Codex Responses Provider."""
-
 from __future__ import annotations
 
 import asyncio
@@ -18,8 +16,6 @@ DEFAULT_ORIGINATOR = "nanobot"
 
 
 class OpenAICodexProvider(LLMProvider):
-    """Use Codex OAuth to call the Responses API."""
-
     def __init__(self, default_model: str = "openai-codex/gpt-5.1-codex"):
         super().__init__(api_key=None, api_base=None)
         self.default_model = default_model
@@ -34,10 +30,8 @@ class OpenAICodexProvider(LLMProvider):
     ) -> LLMResponse:
         model = model or self.default_model
         system_prompt, input_items = _convert_messages(messages)
-
         token = await asyncio.to_thread(get_codex_token)
         headers = _build_headers(token.account_id, token.access)
-
         body: dict[str, Any] = {
             "model": _strip_model_prefix(model),
             "store": False,
@@ -50,12 +44,9 @@ class OpenAICodexProvider(LLMProvider):
             "tool_choice": "auto",
             "parallel_tool_calls": True,
         }
-
         if tools:
             body["tools"] = _convert_tools(tools)
-
         url = DEFAULT_CODEX_URL
-
         try:
             try:
                 content, tool_calls, finish_reason = await _request_codex(
@@ -70,16 +61,9 @@ class OpenAICodexProvider(LLMProvider):
                 content, tool_calls, finish_reason = await _request_codex(
                     url, headers, body, verify=False
                 )
-            return LLMResponse(
-                content=content,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason,
-            )
+            return LLMResponse(content=content, tool_calls=tool_calls, finish_reason=finish_reason)
         except Exception as e:
-            return LLMResponse(
-                content=f"Error calling Codex: {str(e)}",
-                finish_reason="error",
-            )
+            return LLMResponse(content=f"Error calling Codex: {str(e)}", finish_reason="error")
 
     def get_default_model(self) -> str:
         return self.default_model
@@ -104,10 +88,7 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
 
 
 async def _request_codex(
-    url: str,
-    headers: dict[str, str],
-    body: dict[str, Any],
-    verify: bool,
+    url: str, headers: dict[str, str], body: dict[str, Any], verify: bool
 ) -> tuple[str, list[ToolCallRequest], str]:
     async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -120,10 +101,9 @@ async def _request_codex(
 
 
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI function-calling schema to Codex flat format."""
     converted: list[dict[str, Any]] = []
     for tool in tools:
-        fn = (tool.get("function") or {}) if tool.get("type") == "function" else tool
+        fn = tool.get("function") or {} if tool.get("type") == "function" else tool
         name = fn.get("name")
         if not name:
             continue
@@ -142,21 +122,16 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     system_prompt = ""
     input_items: list[dict[str, Any]] = []
-
     for idx, msg in enumerate(messages):
         role = msg.get("role")
         content = msg.get("content")
-
         if role == "system":
             system_prompt = content if isinstance(content, str) else ""
             continue
-
         if role == "user":
             input_items.append(_convert_user_message(content))
             continue
-
         if role == "assistant":
-            # Handle text first.
             if isinstance(content, str) and content:
                 input_items.append(
                     {
@@ -167,7 +142,6 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
                         "id": f"msg_{idx}",
                     }
                 )
-            # Then handle tool calls.
             for tool_call in msg.get("tool_calls", []) or []:
                 fn = tool_call.get("function") or {}
                 call_id, item_id = _split_tool_call_id(tool_call.get("id"))
@@ -183,22 +157,16 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
                     }
                 )
             continue
-
         if role == "tool":
             call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
             output_text = (
                 content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
             )
             input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output_text,
-                }
+                {"type": "function_call_output", "call_id": call_id, "output": output_text}
             )
             continue
-
-    return system_prompt, input_items
+    return (system_prompt, input_items)
 
 
 def _convert_user_message(content: Any) -> dict[str, Any]:
@@ -224,9 +192,9 @@ def _split_tool_call_id(tool_call_id: Any) -> tuple[str, str | None]:
     if isinstance(tool_call_id, str) and tool_call_id:
         if "|" in tool_call_id:
             call_id, item_id = tool_call_id.split("|", 1)
-            return call_id, item_id or None
-        return tool_call_id, None
-    return "call_0", None
+            return (call_id, item_id or None)
+        return (tool_call_id, None)
+    return ("call_0", None)
 
 
 def _prompt_cache_key(messages: list[dict[str, Any]]) -> str:
@@ -263,7 +231,6 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
     tool_calls: list[ToolCallRequest] = []
     tool_call_buffers: dict[str, dict[str, Any]] = {}
     finish_reason = "stop"
-
     async for event in _iter_sse(response):
         event_type = event.get("type")
         if event_type == "response.output_item.added":
@@ -311,8 +278,7 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
             finish_reason = _map_finish_reason(status)
         elif event_type in {"error", "response.failed"}:
             raise RuntimeError("Codex response failed")
-
-    return content, tool_calls, finish_reason
+    return (content, tool_calls, finish_reason)
 
 
 _FINISH_REASON_MAP = {
