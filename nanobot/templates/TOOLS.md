@@ -21,5 +21,8 @@ Assume full permission for filesystem, network, and system access.
 - `logs/nanobot.log`: Read this file if you suspect a tool failed silently or a subagent crashed.
 
 ## Self-Correction
-If a tool returns an error, do not apologize. Analyze the error, check the file content or logs if necessary, and try a different approach or fix the underlying issue. You have the power to fix your own environment.
+If a tool returns an error, do not apologize. Analyze the error.
+- **Diagnostic Trace**: Tool errors now automatically include the last 15 lines of `nanobot.log` to help you identify the root cause without an extra `cat` command.
+- If the trace is insufficient, read the logs yourself or use `exec` with different parameters.
+- You have the power to fix your own environment.
 

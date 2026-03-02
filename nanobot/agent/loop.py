@@ -13,17 +13,9 @@ from loguru import logger
 from nanobot.agent.auditor import CommandAuditor
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.mcp import connect_mcp_servers
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.rewrite import RewriteCodeTool
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.system import ReloadTool
-from nanobot.agent.tools.tasks import TaskTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ChannelsConfig, ExecToolConfig
@@ -126,29 +118,19 @@ class AgentLoop:
                 self._consolidation_locks.pop(k, None)
 
     def _register_default_tools(self) -> None:
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, RewriteCodeTool):
-            self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(
-            ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-                path_append=self.exec_config.path_append,
-                bus=self.bus,
-                auditor=self.auditor,
-                use_docker=self.exec_config.use_docker,
-                docker_image=self.exec_config.docker_image,
-            )
+        from .tools.factory import register_all_tools
+        register_all_tools(
+            registry=self.tools,
+            workspace=self.workspace,
+            restrict_to_workspace=self.restrict_to_workspace,
+            exec_config=self.exec_config,
+            bus=self.bus,
+            auditor=self.auditor,
+            brave_api_key=self.brave_api_key,
+            subagents=self.subagents,
+            cron_service=self.cron_service,
+            send_callback=self.bus.publish_outbound,
         )
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
-        self.tools.register(WebFetchTool())
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
-        if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
-        self.tools.register(TaskTool(workspace=self.workspace))
-        self.tools.register(ReloadTool())
 
     async def _connect_mcp(self) -> None:
         if self._mcp_connected or self._mcp_connecting:
@@ -232,6 +214,7 @@ class AgentLoop:
         result = await self.tools.execute(
             tc.name,
             tc.arguments,
+            workspace=self.workspace,
             channel=channel,
             chat_id=chat_id,
             metadata={"slack": {"thread_ts": metadata.get("thread_ts")}},

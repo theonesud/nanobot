@@ -9,10 +9,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from nanobot.agent.auditor import CommandAuditor
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig
@@ -87,25 +84,16 @@ class SubagentManager:
         logger.info("Subagent [{}] starting task: {}", task_id, label)
         try:
             tools = ToolRegistry()
-            allowed_dir = self.workspace if self.restrict_to_workspace else None
-            tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(
-                ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                    path_append=self.exec_config.path_append,
-                    auditor=self._auditor,
-                    bus=self.bus,
-                    use_docker=self.exec_config.use_docker,
-                    docker_image=self.exec_config.docker_image,
-                )
+            from .tools.factory import register_all_tools
+            register_all_tools(
+                registry=tools,
+                workspace=self.workspace,
+                restrict_to_workspace=self.restrict_to_workspace,
+                exec_config=self.exec_config,
+                bus=self.bus,
+                auditor=self._auditor,
+                brave_api_key=self.brave_api_key,
             )
-            tools.register(WebSearchTool(api_key=self.brave_api_key))
-            tools.register(WebFetchTool())
             system_prompt = self._build_subagent_prompt(task)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -169,6 +157,7 @@ class SubagentManager:
                             tools.execute(
                                 tc.name,
                                 tc.arguments,
+                                workspace=self.workspace,
                                 channel=origin["channel"],
                                 chat_id=origin["chat_id"],
                             )
@@ -227,10 +216,9 @@ You are completing a specific task for the main agent.
 - No side conversations or extra tasks.
 
 ## Capabilities
-- Read/write/edit files in the workspace.
-- Execute shell commands (Docker sandbox available).
-- Web search and page fetching.
-- **Micro-Debugging**: Read `{self.workspace}/logs/nanobot.log` to investigate errors.
+- **Workspace Parity**: You have full access to file tools (`read_file`, `write_file`, `edit_file`, `rewrite_code`), `exec` shell access, and `web_search`.
+- **Self-Correction**: Restart yourself with `reload_agent` if you modify your code.
+- **Diagnostics**: Errors in your tools will automatically include the last 15 lines of `nanobot.log`.
 
 
 ## Limits

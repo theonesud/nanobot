@@ -18,7 +18,7 @@ class ToolRegistry:
     def get_definitions(self) -> list[dict[str, Any]]:
         return [tool.to_schema() for tool in self._tools.values()]
 
-    async def execute(self, name: str, params: dict[str, Any], **kwargs: Any) -> str:
+    async def execute(self, name: str, params: dict[str, Any], workspace: Any | None = None, **kwargs: Any) -> str:
         _hint = "\n\n[Analyze the error above and try a different approach.]"
         tool = self._tools.get(name)
         if not tool:
@@ -37,11 +37,28 @@ class ToolRegistry:
             logger.debug("📤 Tool '{}' response ({} chars)", name, len(res_str))
             if res_str.startswith("Error"):
                 logger.warning("❌ Tool '{}' returned an error", name)
+                if workspace:
+                    log_file = workspace / "logs" / "nanobot.log"
+                    if log_file.exists():
+                        try:
+                            lines = log_file.read_text().splitlines()[-15:]
+                            res_str += "\n\n--- [INTERNAL LOGS (last 15 lines)] ---\n" + "\n".join(lines)
+                        except Exception:
+                            pass
                 return res_str + _hint
             return result
         except Exception as e:
             logger.exception("💥 Exception in tool '{}'", name)
-            return f"Error executing {name}: {str(e)}" + _hint
+            res_str = f"Error executing {name}: {str(e)}"
+            if workspace:
+                log_file = workspace / "logs" / "nanobot.log"
+                if log_file.exists():
+                    try:
+                        lines = log_file.read_text().splitlines()[-15:]
+                        res_str += "\n\n--- [INTERNAL LOGS (last 15 lines)] ---\n" + "\n".join(lines)
+                    except Exception:
+                        pass
+            return res_str + _hint
 
 
     @property

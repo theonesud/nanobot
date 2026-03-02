@@ -11,4 +11,4 @@ Do not create a variable or a function if not using twice. Do the functaionality
 Avoid nesting things.
 Error handling should not be nested until the nested handler is explicitly silencing the error or raising the error above is absolutely necessary. Be careful as nested function calls can also have error handlers - Avoid that. Try to have only one error handler at the root level. This is to avoid silent failures deep in the codebase.
 There should be one, and preferably only one obvious way to do something.
-Run ruff formatter (ruff check . --fix --unsafe-fixes), vulture (remove any dead code, check manually if vulture is 60% confident) and pytest (fix any issues) after all your changes are done to test if everything is clean and stable.
+Run ruff (using 'ruff check . --fix --unsafe-fixes'), vulture (using 'vulture nanobot', remove any dead code, check manually if vulture is 60% confident) and pytest (and fix any issues) after all your changes are done to test if everything is clean and stable.
