@@ -77,8 +77,11 @@ class SessionManager:
 
     def get_or_create(self, key: str) -> Session:
         if key in self._cache:
+            logger.debug("🗂 Session cache hit: {}", key)
             self._cache.move_to_end(key)
             return self._cache[key]
+        logger.debug("🗂 Session cache miss: {}", key)
+
         session = self._load(key)
         if session is None:
             session = Session(key=key)
@@ -126,7 +129,7 @@ class SessionManager:
                         last_consolidated = data.get("last_consolidated", 0)
                     else:
                         messages.append(data)
-            return Session(
+            session = Session(
                 key=key,
                 messages=messages,
                 created_at=created_at or datetime.now(),
@@ -134,8 +137,10 @@ class SessionManager:
                 metadata=metadata,
                 last_consolidated=last_consolidated,
             )
+            logger.info("💾 Loaded session {} ({} messages, last_consolidated: {})", key, len(messages), last_consolidated)
+            return session
         except Exception as e:
-            logger.warning("Failed to load session {}: {}", key, e)
+            logger.warning("❌ Failed to load session {}: {}", key, e)
             return None
 
     async def save_async(self, session: Session) -> None:
@@ -158,6 +163,7 @@ class SessionManager:
                     for m in session.messages:
                         f.write(json.dumps(m, ensure_ascii=False) + "\n")
                 os.replace(temp_path, path)
+                logger.info("💾 Saved session {} ({} messages)", session.key, len(session.messages))
             except Exception:
                 if temp_path.exists():
                     temp_path.unlink()
@@ -165,7 +171,8 @@ class SessionManager:
         self._cache[session.key] = session
         self._cache.move_to_end(session.key)
         if len(self._cache) > self.max_cache_size:
-            self._cache.popitem(last=False)
+            evicted, _ = self._cache.popitem(last=False)
+            logger.debug("🗂 Evicted session {} from cache", evicted)
 
     def save(self, session: Session) -> None:
         try:

@@ -1,5 +1,7 @@
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.tools.base import Tool
 
 
@@ -20,19 +22,27 @@ class ToolRegistry:
         _hint = "\n\n[Analyze the error above and try a different approach.]"
         tool = self._tools.get(name)
         if not tool:
+            logger.error("❌ Tool '{}' not found in registry", name)
             return f"Error: Tool '{name}' not found. Available: {', '.join(self.tool_names)}"
         try:
             errors = tool.validate_params(params)
             if errors:
+                logger.warning("⚠️ Invalid parameters for tool '{}': {}", name, errors)
                 return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _hint
             merged_args = kwargs.copy()
             merged_args.update(params)
+            logger.debug("⚙️ Executing tool: {} with {}", name, params)
             result = await tool.execute(**merged_args)
-            if isinstance(result, str) and result.startswith("Error"):
-                return result + _hint
+            res_str = str(result)
+            logger.debug("📤 Tool '{}' response ({} chars)", name, len(res_str))
+            if res_str.startswith("Error"):
+                logger.warning("❌ Tool '{}' returned an error", name)
+                return res_str + _hint
             return result
         except Exception as e:
+            logger.exception("💥 Exception in tool '{}'", name)
             return f"Error executing {name}: {str(e)}" + _hint
+
 
     @property
     def tool_names(self) -> list[str]:

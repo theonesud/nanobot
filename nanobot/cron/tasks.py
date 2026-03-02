@@ -85,12 +85,21 @@ async def nightly_self_optimization(agent: AgentLoop):
     try:
         with open(history_file, "r", encoding="utf-8") as f:
             logs = [line.strip() for line in deque(f, maxlen=1000)]
+        log_file = agent.workspace / "logs" / "nanobot.log"
+        log_content = ""
+        if log_file.exists():
+            with open(log_file, "r", encoding="utf-8") as f:
+                log_lines = list(deque(f, maxlen=500))
+            log_content = "\n\n--- [INTERNAL RUNTIME LOGS] ---\n" + "".join(log_lines)
+
         planning_prompt = (
             "Review your recent activity logs and current codebase. Identify one specific way you can improve yourself today. "
+            "Use the provided internal runtime logs to look for hidden errors or performance bottlenecks. "
             "This could be: (1) Creating a new skill/tool for a recurring task, (2) Refactoring a clunky piece of your own code, "
             "(3) Updating a policy/rule in MEMORY.md. Plan and then EXECUTE the improvement using your tools. "
-            "If no improvement is needed, say 'All systems optimal'.\n\nLogs:\n" + "\n".join(logs)
+            "If no improvement is needed, say 'All systems optimal'.\n\nLogs:\n" + "\n".join(logs) + log_content
         )
+
         await agent.process_direct(
             planning_prompt,
             session_key="background:optimization",

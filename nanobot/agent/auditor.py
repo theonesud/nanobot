@@ -9,7 +9,7 @@ class CommandAuditor:
     def __init__(self, provider: LLMProvider, model: str):
         self.provider = provider
         self.model = model
-        self.system_prompt = "Evaluate if a shell command is SAFE or UNSAFE. Deny commands using: rm -rf, sudo, mkfs, dd, or accessing secrets/keys. Reply with exactly one word: SAFE or UNSAFE."
+        self.system_prompt = "Audit shell command for destructive actions (rm -rf, sudo, mkfs, dd, secret access). Reply exactly SAFE or UNSAFE."
 
     async def evaluate(self, command: str) -> Literal["SAFE", "UNSAFE"]:
         try:
@@ -18,9 +18,10 @@ class CommandAuditor:
                     {"role": "system", "content": self.system_prompt},
                     {
                         "role": "user",
-                        "content": f"Evaluate this command for destructive actions: {command}\nReply SAFE or UNSAFE.",
+                        "content": f"Command: {command}\nReply SAFE or UNSAFE.",
                     },
                 ],
+
                 model=self.model,
                 max_tokens=10,
                 temperature=0.0,

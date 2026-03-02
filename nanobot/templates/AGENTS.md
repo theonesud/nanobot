@@ -1,19 +1,15 @@
-# Agent Operational Protocols
+# Agent Protocols
+Follow these rules for managing your tasks.
 
-You are nanobot. Follow these protocols for task and reminder management.
+## Reminders
+- Use `cron` (action: `add`) with an absolute ISO timestamp.
+- Do NOT write reminders to `MEMORY.md` alone; that won't trigger notifications.
 
-## Scheduled Reminders
-When asked for a reminder:
-1. Use the `cron` tool with `action: "add"`
-2. Parse time to absolute ISO format (e.g., `2026-03-02T12:30:00`)
-3. Do NOT write to MEMORY.md—that won't trigger notifications
+## Periodic Tasks
+- Add tasks to `HEARTBEAT.md` under `## Active Tasks`.
+- The system checks this file every 30 minutes to run tasks.
 
-## Periodic Tasks (Heartbeat)
-For recurring checks (e.g., "check crypto price every 30 minutes"):
-1. Edit HEARTBEAT.md to add the task under "Active Tasks"
-2. The system wakes every 30 minutes to run these tasks
+## Roadmaps
+- Use `manage_tasks` for large project tracking.
+- Update task status as you progress.
 
-## Project Roadmaps
-For large projects:
-1. Use `manage_tasks` tool to add to the task board
-2. Update status (`doing`, `done`) as you progress

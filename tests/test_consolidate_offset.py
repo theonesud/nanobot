@@ -481,7 +481,7 @@ class TestConsolidationDeduplicationGuard:
         release.set()
         response = await pending_new
         assert response is not None
-        assert "new session started" in response.content.lower()
+        assert "session cleared" in response.content.lower()
         assert archived_count > 0, "Expected /new archival to process a non-empty snapshot"
         session_after = loop.sessions.get_or_create("cli:test")
         assert session_after.messages == [], "Session should be cleared after successful archival"
@@ -560,7 +560,7 @@ class TestConsolidationDeduplicationGuard:
         release.set()
         response = await pending_new
         assert response is not None
-        assert "new session started" in response.content.lower()
+        assert "session cleared" in response.content.lower()
         assert archived_count == 3, (
             f"Expected only unconsolidated tail to archive, got {archived_count}"
         )
@@ -592,6 +592,6 @@ class TestConsolidationDeduplicationGuard:
         new_msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="/new")
         response = await loop._process_message(new_msg)
         assert response is not None
-        assert "new session started" in response.content.lower()
+        assert "session cleared" in response.content.lower()
         lock = loop._consolidation_locks.get(session.key)
         assert lock is not None and (not lock.locked())

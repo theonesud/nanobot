@@ -79,7 +79,7 @@ class SubagentManager:
 
         bg_task.add_done_callback(_cleanup)
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+        return f"Subagent [{display_label}] started (id: {task_id})."
 
     async def _run_subagent(
         self, task_id: str, task: str, label: str, origin: dict[str, str]
@@ -123,7 +123,7 @@ class SubagentManager:
                         daily_total,
                         self.daily_budget,
                     )
-                    final_result = f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. Subagent stopping."
+                    final_result = f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) reached limit of ${self.daily_budget:.2f}. Subagent stopped."
                     break
                 response = await self.provider.chat(
                     messages=messages,
@@ -188,7 +188,7 @@ class SubagentManager:
                     final_result = strip_think(response.content)
                     break
             if final_result is None:
-                final_result = "Task completed but no final response was generated."
+                final_result = "Task completed. No output generated."
             logger.info("Subagent [{}] completed successfully", task_id)
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
         except Exception as e:
@@ -199,8 +199,8 @@ class SubagentManager:
     async def _announce_result(
         self, task_id: str, label: str, task: str, result: str, origin: dict[str, str], status: str
     ) -> None:
-        status_text = "completed successfully" if status == "ok" else "failed"
-        announce_content = f"""[Subagent '{label}' {status_text}]\n\nTask: {task}\n\nResult:\n{result}\n\nSummarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
+        status_text = "completed" if status == "ok" else "failed"
+        announce_content = f"""[Subagent '{label}' {status_text}]\nTask: {task}\nResult:\n{result}\n\nSummarize this briefly (1-2 sentences) for the user. Do not mention "subagent" or IDs."""
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
@@ -216,31 +216,30 @@ class SubagentManager:
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = time.strftime("%Z") or "UTC"
         return f"""# Subagent
+- Time: {now} ({tz})
+- Workspace: {self.workspace}
 
-**Current Time**: {now} ({tz})
-
-You are a subagent completing a specific task. Your output goes back to the main agent.
+You are completing a specific task for the main agent.
 
 ## Rules
-- Stay focused on the assigned task only
-- Be concise in your final summary
-- Do not initiate side conversations or take on extra tasks
+- Focus ONLY on the assigned task.
+- Be concise.
+- No side conversations or extra tasks.
 
 ## Capabilities
-- Read/write/edit files in your workspace
-- Execute shell commands (Docker sandbox available)
-- Search the web and fetch web pages
+- Read/write/edit files in the workspace.
+- Execute shell commands (Docker sandbox available).
+- Web search and page fetching.
+- **Micro-Debugging**: Read `{self.workspace}/logs/nanobot.log` to investigate errors.
+
 
 ## Limits
-- No direct messaging to users (no message tool)
-- No spawning other subagents
-- No access to main agent's conversation history
+- No direct user messaging.
+- No spawning other agents.
+- No access to main conversation history.
 
-## Workspace
-- Path: {self.workspace}
-- Skills: {self.workspace}/skills/ (read SKILL.md as needed)
+Complete the task and provide a clear summary."""
 
-Complete the task, then provide a clear summary."""
 
     async def cancel_by_session(self, session_key: str) -> int:
         tasks = [

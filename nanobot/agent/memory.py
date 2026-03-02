@@ -114,16 +114,18 @@ class MemoryStore:
                 f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {content_str}"
             )
         current_memory = self.read_long_term()
-        prompt = f"Process this conversation and call the save_memory tool with your consolidation.\n\n## Current Long-term Memory\n{current_memory or '(empty)'}\n\n## Conversation to Process\n{chr(10).join(lines)}"
+        logger.debug("🧠 Reading existing long-term memory ({} chars)", len(current_memory))
+        prompt = f"Consolidate this conversation. Call save_memory.\n\n## Current Memory\n{current_memory or '(empty)'}\n\n## New Messages\n{chr(10).join(lines)}"
         memory_lock_path = self.memory_path.with_suffix(".lock")
         history_lock_path = self.history_path.with_suffix(".lock")
         try:
             async with FileLock(memory_lock_path), FileLock(history_lock_path):
+                logger.debug("🧠 Calling provider to consolidate ({} chars in prompt)", len(prompt))
                 response = await provider.chat(
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation.",
+                            "content": "Consolidate conversation into memory. Call save_memory.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -131,16 +133,17 @@ class MemoryStore:
                     model=model,
                 )
             if not response.has_tool_calls:
-                logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
+                logger.warning("🧠 LLM did not call save_memory, skipping consolidation")
                 return False
             args = response.tool_calls[0].arguments
             if isinstance(args, str):
                 args = json.loads(args)
             if not isinstance(args, dict):
                 logger.warning(
-                    "Memory consolidation: unexpected arguments type {}", type(args).__name__
+                    "🧠 Unexpected arguments type received: {}", type(args).__name__
                 )
                 return False
+
             if entry := args.get("history_entry"):
                 if not isinstance(entry, str):
                     entry = json.dumps(entry, ensure_ascii=False)

@@ -206,6 +206,7 @@ class CronService:
             current_next_wake = self._get_next_wake_ms()
             if current_next_wake:
                 delay_ms = max(0, current_next_wake - _now_ms())
+                logger.debug("⏰ Cron ticker waiting for {:.2f}s", delay_ms / 1000)
                 await asyncio.sleep(delay_ms / 1000)
             else:
                 await asyncio.sleep(60)
@@ -213,6 +214,7 @@ class CronService:
                 await self._on_timer()
 
         self._timer_task = asyncio.create_task(tick())
+
 
     async def _on_timer(self) -> None:
         if not self._store:
@@ -227,6 +229,11 @@ class CronService:
                 and j.state.next_run_at_ms
                 and (now >= j.state.next_run_at_ms)
             ]
+        if due_jobs:
+            logger.info("⏰ Cron: found {} due job(s)", len(due_jobs))
+        else:
+            logger.debug("⏰ Cron ticker woke up, no jobs due")
+
 
         async def _run_and_save(job: CronJob) -> None:
             try:

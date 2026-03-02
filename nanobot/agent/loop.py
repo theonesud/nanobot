@@ -106,7 +106,13 @@ class AgentLoop:
         self.daily_budget = 5.0
         p_name = "opencode" if provider.__class__.__name__ == "OpenCodeProvider" else "auto"
         self.context.set_provider_hint(p_name)
+        log_dir = self.workspace / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "nanobot.log"
+        logger.add(log_file, rotation="10 MB", retention="7 days", level="DEBUG", filter="nanobot")
+        logger.info("🎬 Nanobot session started. Logs: {}", log_file)
         self._register_default_tools()
+
 
     async def _periodic_cleanup(self) -> None:
         while self._running:
@@ -220,7 +226,9 @@ class AgentLoop:
         channel = metadata.get("channel")
         chat_id = metadata.get("chat_id")
         args_str = json.dumps(tc.arguments, ensure_ascii=False)
-        logger.info("Tool call: {}({})", tc.name, args_str[:200])
+        logger.info("🔧 Tool start: {}({})", tc.name, args_str[:500])
+        if on_progress := metadata.get("on_progress"):
+             await on_progress(f"🔧 Tool start: {tc.name}")
         result = await self.tools.execute(
             tc.name,
             tc.arguments,
@@ -231,7 +239,11 @@ class AgentLoop:
                 channel=channel, chat_id=chat_id, content=content
             ),
         )
-        return (tc.id, tc.name, str(result))
+        res_str = str(result)
+        logger.info("✅ Tool finish: {} -> {}", tc.name, res_str[:200] + "..." if len(res_str) > 200 else res_str)
+        if on_progress := metadata.get("on_progress"):
+             await on_progress(f"✅ Tool finish: {tc.name}")
+        return (tc.id, tc.name, res_str)
 
     async def _run_agent_loop(
         self,
@@ -250,9 +262,12 @@ class AgentLoop:
                 logger.critical(
                     "DAILY BUDGET EXCEEDED: ${:.2f} / ${:.2f}", daily_total, self.daily_budget
                 )
-                final_content = f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has exceeded your limit of ${self.daily_budget:.2f}. Please increase the limit or wait until tomorrow."
+                final_content = f"⚠️ **Budget Exceeded**: Daily usage (${daily_total:.2f}) has reached your limit of ${self.daily_budget:.2f}. Increase the limit or wait until tomorrow."
                 messages = self.context.add_assistant_message(messages, final_content)
                 return (final_content, tools_used, messages)
+            if on_progress:
+                await on_progress(f"🧠 Iteration {iteration}: Thinking...")
+            logger.info("🧠 Iteration {}: Calling provider ({})", iteration, self.model)
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
@@ -261,6 +276,7 @@ class AgentLoop:
                 max_tokens=self.max_tokens,
                 on_progress=on_progress,
             )
+            cost = 0.0
             if response.usage:
                 p_tokens = response.usage.get("prompt_tokens", 0)
                 c_tokens = response.usage.get("completion_tokens", 0)
@@ -274,6 +290,8 @@ class AgentLoop:
                     c_tokens,
                     cost,
                 )
+            logger.info("🧠 Iteration {}: Received response ({} tokens, cost: ${:.4f})", iteration, response.usage.get("total_tokens", 0) if response.usage else 0, cost)
+
             if response.has_tool_calls:
                 if on_progress:
                     clean = strip_think(response.content)
@@ -298,6 +316,7 @@ class AgentLoop:
                     reasoning_content=response.reasoning_content,
                 )
                 metadata = initial_messages[0].get("_nanobot_metadata", {})
+                metadata["on_progress"] = on_progress
                 results = await asyncio.gather(
                     *[
                         self._execute_single_tool(tc, metadata, tools_used)
@@ -315,7 +334,7 @@ class AgentLoop:
                 break
         if final_content is None and iteration >= self.max_iterations:
             logger.warning("Max iterations ({}) reached", self.max_iterations)
-            final_content = f"I reached the maximum number of tool call iterations ({self.max_iterations}) without completing the task. You can try breaking the task into smaller steps."
+            final_content = f"Max iterations ({self.max_iterations}) reached without completion. Try breaking the task into smaller steps."
             messages = self.context.add_assistant_message(messages, final_content)
         return (final_content, tools_used, messages)
 
@@ -356,7 +375,7 @@ class AgentLoop:
                 pass
         sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
         total = cancelled + sub_cancelled
-        content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
+        content = f"⏹ Stopped {total} task(s)." if total else "No active tasks to stop."
         await self.bus.publish_outbound(
             OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
         )
@@ -387,6 +406,7 @@ class AgentLoop:
                 logger.info("Task cancelled before processing session {}", msg.session_key)
                 return
             try:
+                logger.info("📩 Processing message from {}:{} (session: {})", msg.channel, msg.sender_id, msg.session_key)
                 response = await self._process_message(msg)
                 if response is not None:
                     await self.bus.publish_outbound(response)
@@ -459,6 +479,7 @@ class AgentLoop:
         key = f"{channel}:{chat_id}"
         session = self.sessions.get_or_create(key)
         self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+        logger.info("🏗 Building context for system message session {}", key)
         history = session.get_history(max_messages=self.memory_window)
         messages = self.context.build_messages(
             history=history,
@@ -506,14 +527,14 @@ class AgentLoop:
                         return OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            content="Memory archival failed, session not cleared. Please try again.",
+                            content="Memory archival failed. Session remains active.",
                         )
         except Exception:
             logger.exception("/new archival failed for {}", session.key)
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="Memory archival failed, session not cleared. Please try again.",
+                content="Memory archival failed. Session remains active.",
             )
         finally:
             self._consolidating.discard(session.key)
@@ -521,7 +542,7 @@ class AgentLoop:
         await self.sessions.save_async(session)
         self.sessions.invalidate(session.key)
         return OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, content="New session started."
+            channel=msg.channel, chat_id=msg.chat_id, content="Session cleared."
         )
 
     async def _do_consolidation(self, session: Session) -> None:
@@ -564,16 +585,16 @@ class AgentLoop:
         if msg.channel == "system":
             return await self._handle_system_message(msg)
         logger.info(
-            "Processing message from {}:{}: {}",
+            "📩 Processing inbound message from {}:{}: {}",
             msg.channel,
             msg.sender_id,
-            msg.content[:80] + "..." if len(msg.content) > 80 else msg.content,
+            msg.content[:100] + "..." if len(msg.content) > 100 else msg.content,
         )
         session = self.sessions.get_or_create(session_key or msg.session_key)
         is_godmode = msg.metadata.get("is_godmode", False)
         if is_godmode:
             logger.warning("🚨 GOD MODE active for session {}", session.key)
-            god_prompt = "\n\n--- [SYSTEM NOTICE: GOD MODE ACTIVE] ---\nYou have been granted full permissions to modify your own source code accurately. 1. Research your implementation by reading files in your workspace.\n2. Implement the requested changes.\n3. Use `ruff check nanobot` or other shell commands to verify syntax.\n4. Call `reload_agent` to restart and apply changes.\nDO NOT fail. If you break the code, you will stop functioning."
+            god_prompt = "\n\n--- [SYSTEM: GOD MODE] ---\nYou have full permission to modify your source code. 1. Research relevant files. 2. Implement changes. 3. Verify with `ruff check nanobot`. 4. Call `reload_agent`. Do not fail."
             msg.content += god_prompt
         cmd = msg.content.strip().lower()
         if cmd == "/new":
@@ -582,7 +603,7 @@ class AgentLoop:
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+                content="🤖 nanobot commands:\n/new — Clear session\n/stop — Stop active tasks\n/help — Show commands",
             )
         self._check_consolidation(session)
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
@@ -590,6 +611,7 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
         history = session.get_history(max_messages=self.memory_window)
+        logger.info("🏗 Building context ({} history messages) for session {}", len(history), session.key)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
@@ -612,17 +634,17 @@ class AgentLoop:
                 or (lambda c, **k: self._bus_progress(msg, c, tool_hint=k.get("tool_hint", False))),
             )
             if final_content is None:
-                final_content = "I've completed processing but have no response to give."
+                final_content = "Task completed. No further output."
         except Exception as e:
             logger.exception("Error during agent loop iteration")
-            final_content = f"Sorry, I encountered an error during execution: {e}"
+            final_content = f"Execution error: {e}"
             all_msgs = initial_messages
         self._save_turn(session, all_msgs, 1 + len(history))
         await self.sessions.save_async(session)
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info("📤 Sending final response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,

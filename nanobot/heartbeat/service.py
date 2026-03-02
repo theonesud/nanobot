@@ -74,16 +74,18 @@ class HeartbeatService:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision.",
+                    "content": "Check HEARTBEAT.md for active tasks. Call heartbeat tool.",
                 },
                 {
                     "role": "user",
-                    "content": f"Review the following HEARTBEAT.md and decide whether there are active tasks.\n\n{content}",
+                    "content": f"HEARTBEAT.md content:\n\n{content}",
                 },
             ],
             tools=_HEARTBEAT_TOOL,
             model=self.model,
         )
+
+
         if not response.has_tool_calls:
             return ("skip", "")
         args = response.tool_calls[0].arguments

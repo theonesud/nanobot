@@ -52,9 +52,12 @@ class OpenCodeProvider(LLMProvider):
 
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
         try:
+            logger.info("🚀 Starting OpenCode CLI process...")
             process = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
+
+
             full_content = []
             tool_calls = []
             usage = {}
@@ -67,7 +70,9 @@ class OpenCodeProvider(LLMProvider):
                 if process.stderr:
                     async for line in process.stderr:
                         if line:
-                            stderr_buffer.append(line.decode(errors="replace"))
+                            err_line = line.decode(errors="replace").strip()
+                            logger.error("🔴 OpenCode Stderr: {}", err_line)
+                            stderr_buffer.append(err_line + "\n")
 
             stderr_task = asyncio.create_task(consume_stderr())
             if process.stdout:
@@ -75,16 +80,21 @@ class OpenCodeProvider(LLMProvider):
                     if not line:
                         break
                     try:
-                        event = json.loads(line.decode().strip())
+                        raw_line = line.decode().strip()
+                        event = json.loads(raw_line)
                         evt_type = event.get("type")
                         part = event.get("part", {})
                         if evt_type == "step_start":
                             step_count += 1
+                            logger.info("💭 OpenCode Step {} start", step_count)
                             if on_progress:
                                 await on_progress(f"⚙️ opencode: Thinking (Step {step_count})...")
                         elif evt_type == "text":
                             text = part.get("text", "")
                             full_content.append(text)
+                            # Log first 50 chars of text blocks to terminal
+                            if text.strip():
+                                logger.debug("📖 OpenCode Text: {}...", text.strip()[:50].replace("\n", " "))
                             if on_progress and text.strip():
                                 await on_progress(text)
                                 response_streamed = True
@@ -104,7 +114,7 @@ class OpenCodeProvider(LLMProvider):
                                         call = tc_data.get("nanobot_tool_call")
                                         if call:
                                             from uuid import uuid4
-
+                                            logger.info("🛠 OpenCode requested tool call: {}", call["name"])
                                             tool_calls.append(
                                                 ToolCallRequest(
                                                     id=f"call_{uuid4().hex[:12]}",
@@ -113,13 +123,14 @@ class OpenCodeProvider(LLMProvider):
                                                 )
                                             )
                                             finish_reason = "tool_calls"
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("Failed to parse tool call JSON: {}", e)
                         elif evt_type == "tool_use":
+                            tool_name = part.get("tool", "tool")
+                            state = part.get("state", {})
+                            target = state.get("title") or state.get("command") or ""
+                            logger.info("⚙️ OpenCode using tool: {}({})", tool_name, target)
                             if on_progress:
-                                tool_name = part.get("tool", "tool")
-                                state = part.get("state", {})
-                                target = state.get("title") or state.get("command") or ""
                                 if len(target) > 50:
                                     target = target[:50] + "..."
                                 msg = (
@@ -131,10 +142,13 @@ class OpenCodeProvider(LLMProvider):
                         elif evt_type == "step_finish":
                             finish_reason = part.get("reason", "stop")
                             usage = part.get("tokens", {})
+                            logger.info("🏁 OpenCode Step {} finished (reason: {})", step_count, finish_reason)
                     except Exception as e:
                         logger.debug(f"Failed to parse line from OpenCode: {e}")
             await process.wait()
             await stderr_task
+            logger.info("⏹ OpenCode process exited with code {}", process.returncode)
+
             if process.returncode != 0:
                 stderr_data = "".join(stderr_buffer)
                 return LLMResponse(

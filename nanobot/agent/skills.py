@@ -62,28 +62,16 @@ class SkillsLoader:
         all_skills = self.list_skills(filter_unavailable=False)
         if not all_skills:
             return ""
-
-        def escape_xml(s: str) -> str:
-            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        lines = ["<skills>"]
+        lines = ["## Skills"]
         for s in all_skills:
-            name = escape_xml(s["name"])
-            path = s["path"]
-            desc = escape_xml(self._get_skill_description(s["name"]))
-            skill_meta = self._get_skill_meta(s["name"])
+            name = s["name"]
+            desc = self._get_skill_description(name)
+            skill_meta = self._get_skill_meta(name)
             available = self._check_requirements(skill_meta)
-            lines.append(f'  <skill available="{str(available).lower()}">')
-            lines.append(f"    <name>{name}</name>")
-            lines.append(f"    <description>{desc}</description>")
-            lines.append(f"    <location>{path}</location>")
-            if not available:
-                missing = self._get_missing_requirements(skill_meta)
-                if missing:
-                    lines.append(f"    <requires>{escape_xml(missing)}</requires>")
-            lines.append("  </skill>")
-        lines.append("</skills>")
+            status = "(available)" if available else f"(missing: {self._get_missing_requirements(skill_meta)})"
+            lines.append(f"- **{name}**: {desc} {status}")
         return "\n".join(lines)
+
 
     def _get_missing_requirements(self, skill_meta: dict) -> str:
         missing = []

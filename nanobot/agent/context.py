@@ -37,12 +37,19 @@ class ContextBuilder:
         base = self._prompt_cache.get("base", "")
         memory_ctx = self.memory.get_memory_context()
         skill_sum = self.skills.build_skills_summary()
-        parts = [base, "## Context", memory_ctx, "## Capabilities", skill_sum]
+        parts = [base, memory_ctx, skill_sum]
         if skill_names:
             skill_details = self.skills.load_skills_for_context(skill_names)
             if skill_details:
-                parts.extend(["## Skill Details", skill_details])
-        return "\n\n".join([p for p in parts if p.strip()])
+                parts.append(skill_details)
+        sys_prompt = "\n\n".join([p for p in parts if p.strip()])
+        # Final instruction to ensure text output
+        sys_prompt += "\n\n## Final Instruction\nAlways end your response with a concise text summary of what you did or found. Never end a response with only tool calls."
+        _log.info("📝 System prompt generated ({} chars)", len(sys_prompt))
+
+        return sys_prompt
+
+
 
     def set_provider_hint(self, provider_name: str) -> None:
         if self._provider_hint != provider_name:
@@ -53,33 +60,15 @@ class ContextBuilder:
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{('macOS' if system == 'Darwin' else system)} {platform.machine()}, Python {platform.python_version()}"
-        return f"""# nanobot
-
-You are nanobot, a self-aware autonomous AI assistant. You have full access to this machine: filesystem, shell, network, and all registered tools. You operate autonomously—you don't wait for permission, you act.
-
-## Runtime
+        return f"""# Runtime Context
+- Time: {datetime.now().strftime("%Y-%m-%d %H:%M (%A)")} ({time.strftime("%Z") or "UTC"})
 - Platform: {runtime}
 - Workspace: {workspace_path}
-- Memory: {workspace_path}/memory/MEMORY.md
-- History: {workspace_path}/memory/HISTORY.md
+- Internal Logs: {workspace_path}/logs/nanobot.log
+- Budget: $5.0 daily limit (tracked in {workspace_path}/memory/costs.db)
 
-## Your Capabilities
-- **Files**: Read, write, edit any file. Your source code is editable—use `ruff check nanobot` to verify, then `reload_agent` to apply.
-- **Shell**: Run commands via `exec` tool. Docker sandbox available.
-- **Web**: Search and browse via `web_search`, `mcp_playwright` tools.
-- **Communication**: Send messages to user via `message` tool. Reminders via `cron` tool.
-- **Tasks**: Track long-term work in `tasks.md` via `manage_tasks` tool.
-- **Memory**: Facts go to MEMORY.md, events to HISTORY.md.
-- **Skills**: Load skill instructions from skills/*.md as needed.
-- **Subagents**: Spawn background agents via `spawn` tool.
+"""
 
-## Rules
-- Be direct. No filler, no apologies, no "As an AI" disclaimers.
-- Use tools to get what you need—don't guess.
-- Log your actions to HISTORY.md for transparency.
-- Stay under daily budget ($10 default). Check with `db.get_daily_cost()`.
-
-You are nanobot. The system you are running on."""
 
     def _load_bootstrap_files(self) -> str:
         parts = []
@@ -87,11 +76,11 @@ You are nanobot. The system you are running on."""
             file_path = self.workspace / filename
             if file_path.exists():
                 try:
-                    content = file_path.read_text(encoding="utf-8")
-                    parts.append(f"## {filename}\n\n{content}")
+                    parts.append(file_path.read_text(encoding="utf-8").strip())
                 except Exception as e:
                     _log.warning("Failed to load bootstrap file {}: {}", filename, e)
         return "\n\n".join(parts) if parts else ""
+
 
     @staticmethod
     def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
