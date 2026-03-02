@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.filesystem import _git_commit
+from nanobot.agent.tools.filesystem import _atomic_write, _git_commit
 
 
 class TaskTool(Tool):
@@ -43,7 +43,7 @@ class TaskTool(Tool):
                 "status": "todo",
                 "created_at": __import__("datetime").datetime.now().isoformat(),
             }
-            path.write_text(json.dumps(task, indent=2), encoding="utf-8")
+            _atomic_write(path, json.dumps(task, indent=2))
             _git_commit(path, f"nanobot: add task {tid}")
             return f"Task '{tid}' added."
 
@@ -75,7 +75,7 @@ class TaskTool(Tool):
             task = json.loads(path.read_text(encoding="utf-8"))
             task["status"] = "done"
             task["completed_at"] = __import__("datetime").datetime.now().isoformat()
-            path.write_text(json.dumps(task, indent=2), encoding="utf-8")
+            _atomic_write(path, json.dumps(task, indent=2))
             _git_commit(path, f"nanobot: complete task {tid}")
             return f"Task '{tid}' marked as done."
 

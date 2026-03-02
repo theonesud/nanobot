@@ -32,12 +32,13 @@ class ContextBuilder:
         if self._prompt_cache.get("mtimes") != mtimes:
             identity = self._get_identity()
             bootstrap = self._load_bootstrap_files()
-            self._prompt_cache["base"] = f"{identity}\n\n{bootstrap}"
+            self._prompt_cache["base"] = bootstrap
             self._prompt_cache["mtimes"] = mtimes
         base = self._prompt_cache.get("base", "")
+        identity = self._get_identity()
         memory_ctx = self.memory.get_memory_context()
         skill_sum = self.skills.build_skills_summary()
-        parts = [base, memory_ctx, skill_sum]
+        parts = [identity, base, memory_ctx, skill_sum]
         if skill_names:
             skill_details = self.skills.load_skills_for_context(skill_names)
             if skill_details:

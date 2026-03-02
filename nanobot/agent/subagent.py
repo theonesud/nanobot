@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from nanobot.agent.auditor import CommandAuditor
+from nanobot.agent.tools.factory import register_all_tools
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
@@ -16,7 +17,6 @@ from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.database import Database
 from nanobot.utils.helpers import get_model_pricing, strip_think
-from nanobot.agent.tools.factory import register_all_tools
 
 if TYPE_CHECKING:
     pass

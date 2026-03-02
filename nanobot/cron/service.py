@@ -8,6 +8,7 @@ from typing import Any, Callable, Coroutine
 
 from loguru import logger
 
+from nanobot.agent.tools.filesystem import _atomic_write
 from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
 
@@ -148,15 +149,9 @@ class CronService:
                 for j in self._store.jobs
             ],
         }
-        import os
-
-        temp_path = self.store_path.with_suffix(".tmp")
         try:
-            temp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(temp_path, self.store_path)
+            _atomic_write(self.store_path, json.dumps(data, indent=2, ensure_ascii=False))
         except Exception:
-            if temp_path.exists():
-                temp_path.unlink()
             raise
 
     async def start(self) -> None:

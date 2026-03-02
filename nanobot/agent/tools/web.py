@@ -143,7 +143,7 @@ class WebFetchTool(Tool):
             ).geturl()
             headers = {"User-Agent": USER_AGENT, "Host": parsed.hostname}
             async with httpx.AsyncClient(
-                follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0, verify=False
+                follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0, verify=True
             ) as client:
                 r = await client.get(target_url, headers=headers)
                 r.raise_for_status()

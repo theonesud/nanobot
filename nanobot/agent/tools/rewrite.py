@@ -2,6 +2,7 @@ import ast
 import re
 from pathlib import Path
 from typing import Any
+import textwrap
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.filesystem import _atomic_write, _git_commit, _resolve_path
@@ -47,6 +48,7 @@ class RewriteCodeTool(Tool):
             if start < len(lines):
                 m = re.match(r"^\s*", lines[start])
                 indent = m.group(0) if m else ""
+            new_code = textwrap.dedent(new_code)
             indented_code = "\n".join(
                 [(indent + line) for line in new_code.splitlines()]
             )

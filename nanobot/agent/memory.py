@@ -119,40 +119,40 @@ class MemoryStore:
         memory_lock_path = self.memory_path.with_suffix(".lock")
         history_lock_path = self.history_path.with_suffix(".lock")
         try:
-            async with FileLock(memory_lock_path), FileLock(history_lock_path):
-                logger.debug("🧠 Calling provider to consolidate ({} chars in prompt)", len(prompt))
-                response = await provider.chat(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Consolidate conversation into memory. Call save_memory.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    tools=_SAVE_MEMORY_TOOL,
-                    model=model,
-                )
+            logger.debug("🧠 Calling provider to consolidate ({} chars in prompt)", len(prompt))
+            response = await provider.chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Consolidate conversation into memory. Call save_memory.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_SAVE_MEMORY_TOOL,
+                model=model,
+            )
             if not response.has_tool_calls:
                 logger.warning("🧠 LLM did not call save_memory, skipping consolidation")
                 return False
-            args = response.tool_calls[0].arguments
-            if isinstance(args, str):
-                args = json.loads(args)
-            if not isinstance(args, dict):
-                logger.warning(
-                    "🧠 Unexpected arguments type received: {}", type(args).__name__
-                )
-                return False
+            async with FileLock(memory_lock_path), FileLock(history_lock_path):
+                args = response.tool_calls[0].arguments
+                if isinstance(args, str):
+                    args = json.loads(args)
+                if not isinstance(args, dict):
+                    logger.warning(
+                        "🧠 Unexpected arguments type received: {}", type(args).__name__
+                    )
+                    return False
 
-            if entry := args.get("history_entry"):
-                if not isinstance(entry, str):
-                    entry = json.dumps(entry, ensure_ascii=False)
-                self.append_history(entry)
-            if update := args.get("memory_update"):
-                if not isinstance(update, str):
-                    update = json.dumps(update, ensure_ascii=False)
-                if update != current_memory:
-                    self.write_long_term(update)
+                if entry := args.get("history_entry"):
+                    if not isinstance(entry, str):
+                        entry = json.dumps(entry, ensure_ascii=False)
+                    self.append_history(entry)
+                if update := args.get("memory_update"):
+                    if not isinstance(update, str):
+                        update = json.dumps(update, ensure_ascii=False)
+                    if update != current_memory:
+                        self.write_long_term(update)
             session.last_consolidated = end_idx
             logger.info(
                 "Memory consolidation done: {} messages, last_consolidated={}",

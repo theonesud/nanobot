@@ -27,9 +27,9 @@ class CommandAuditor:
                 temperature=0.0,
             )
             result = (response.content or "").strip().upper()
-            if "SAFE" in result and "UNSAFE" not in result:
-                return "SAFE"
-            return "UNSAFE"
+            if "UNSAFE" in result or "NOT SAFE" in result:
+                return "UNSAFE"
+            return "SAFE" if "SAFE" in result else "UNSAFE"
         except Exception:
             logger.exception("Auditor execution failed")
             return "UNSAFE"

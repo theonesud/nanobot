@@ -670,6 +670,8 @@ class AgentLoop:
                     parts = content.split("\n\n", 1)
                     if len(parts) == 2 and parts[0].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                         entry["content"] = parts[1]
+                    elif parts[0].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                        entry["content"] = ""
                 elif isinstance(content, list):
                     entry["content"] = [
                         (

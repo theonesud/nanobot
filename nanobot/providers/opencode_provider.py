@@ -34,7 +34,7 @@ class OpenCodeProvider(LLMProvider):
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content") or ""
-            if role == "system" or role == "tool":
+            if role == "system":
                 continue
             prompt_parts.append(f"<{role.upper()}>\n{content}\n</{role.upper()}>")
 
