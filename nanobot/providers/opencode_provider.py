@@ -61,6 +61,7 @@ class OpenCodeProvider(LLMProvider):
             finish_reason = "stop"
             step_count = 0
             stderr_buffer = []
+            response_streamed = False
 
             async def consume_stderr():
                 if process.stderr:
@@ -84,6 +85,9 @@ class OpenCodeProvider(LLMProvider):
                         elif evt_type == "text":
                             text = part.get("text", "")
                             full_content.append(text)
+                            if on_progress and text.strip():
+                                await on_progress(text)
+                                response_streamed = True
                             current_full_text = "".join(full_content)
                             if '"nanobot_tool_call"' in current_full_text and not tool_calls:
                                 try:
@@ -151,6 +155,7 @@ class OpenCodeProvider(LLMProvider):
                 tool_calls=tool_calls,
                 finish_reason="tool_calls" if tool_calls else finish_reason,
                 usage=norm_usage,
+                streamed=response_streamed,
             )
         except Exception as e:
             logger.exception("OpenCode CLI execution failed")

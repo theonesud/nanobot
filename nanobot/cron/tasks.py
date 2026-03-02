@@ -1,12 +1,13 @@
 import asyncio
+import re
 import subprocess
+from collections import deque
 
 from loguru import logger
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import OutboundMessage
-from collections import deque
-import re
+
 
 async def summarize_git_diffs(agent: AgentLoop, channel: str = "slack", chat_id: str = "general"):
     logger.info("Heartbeat: starting git diff summary task")

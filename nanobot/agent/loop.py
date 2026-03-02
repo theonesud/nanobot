@@ -277,7 +277,7 @@ class AgentLoop:
             if response.has_tool_calls:
                 if on_progress:
                     clean = strip_think(response.content)
-                    if clean:
+                    if clean and not response.streamed:
                         await on_progress(clean)
                     await on_progress(f"⚙️ {self._tool_hint(response.tool_calls)}", tool_hint=True)
                 tool_call_dicts = [
