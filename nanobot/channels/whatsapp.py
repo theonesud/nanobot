@@ -18,6 +18,7 @@ class WhatsAppChannel(BaseChannel):
         self.config: WhatsAppConfig = config
         self._ws = None
         self._connected = False
+        self._me_jid = None
 
     async def start(self) -> None:
         bridge_url = self.config.bridge_url
@@ -77,16 +78,23 @@ class WhatsAppChannel(BaseChannel):
         msg_type = data.get("type")
         if msg_type == "message":
             from_me = data.get("fromMe", False)
-            if not self.config.allow_from and not from_me:
-                return
-
-            pn = data.get("pn", "")
             sender = data.get("sender", "")
+
+            if from_me:
+                if self._me_jid and sender != self._me_jid:
+                    return
+                sender_id = self._me_jid.split("@")[0] if self._me_jid else "me"
+            elif not self.config.allow_from:
+                return
+            else:
+                pn = data.get("pn", "")
+                user_id = pn if pn else sender
+                sender_id = user_id.split("@")[0] if "@" in user_id else user_id
+
             content = data.get("content", "")
-            user_id = pn if pn else sender
-            sender_id = user_id.split("@")[0] if "@" in user_id else user_id
             if content == "[Voice Message]":
                 content = "[Voice Message: Transcription not available for WhatsApp yet]"
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender,
