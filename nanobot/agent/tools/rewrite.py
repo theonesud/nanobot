@@ -1,8 +1,8 @@
 import ast
 import re
+import textwrap
 from pathlib import Path
 from typing import Any
-import textwrap
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.filesystem import _atomic_write, _git_commit, _resolve_path
@@ -34,24 +34,28 @@ class RewriteCodeTool(Tool):
             source = file_path.read_text(encoding="utf-8")
             tree = ast.parse(source)
             lines = source.splitlines(keepends=True)
+            parts = symbol.split(".")
+            current_nodes = [n for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
             target_node = None
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    if node.name == symbol:
-                        target_node = node
-                        break
+            for i, part in enumerate(parts):
+                match = next((n for n in current_nodes if getattr(n, "name", None) == part), None)
+                if not match:
+                    return f"Error: Symbol '{symbol}' not found in {path} (missing '{part}')"
+                if i == len(parts) - 1:
+                    target_node = match
+                elif isinstance(match, ast.ClassDef):
+                    current_nodes = [n for n in match.body if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+                else:
+                    return f"Error: Cannot dive into '{part}' (not a class)"
             if not target_node:
                 return f"Error: Symbol '{symbol}' not found in {path}"
             start, end = target_node.lineno - 1, target_node.end_lineno
-            # Preserve indentation of the original symbol if possible
             indent = ""
             if start < len(lines):
                 m = re.match(r"^\s*", lines[start])
                 indent = m.group(0) if m else ""
             new_code = textwrap.dedent(new_code)
-            indented_code = "\n".join(
-                [(indent + line) for line in new_code.splitlines()]
-            )
+            indented_code = "\n".join([(indent + line) for line in new_code.splitlines()])
             if not indented_code.endswith("\n") and end < len(lines):
                 indented_code += "\n"
             lines[start:end] = [indented_code]

@@ -44,7 +44,7 @@ class AgentLoop:
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-        memory_window: int = 100,
+        memory_window: int = 50,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -110,13 +110,10 @@ class AgentLoop:
     async def _periodic_cleanup(self) -> None:
         while self._running:
             await asyncio.sleep(3600)
-            for k in [
-                k
-                for k in self._processing_locks
-                if not self._active_tasks.get(k) and k not in self._consolidating
-            ]:
-                self._processing_locks.pop(k, None)
-                self._consolidation_locks.pop(k, None)
+            for k in list(self._processing_locks.keys()):
+                if not self._active_tasks.get(k) and k not in self._consolidating:
+                    self._processing_locks.pop(k, None)
+                    self._consolidation_locks.pop(k, None)
 
     def _register_default_tools(self) -> None:
         register_all_tools(
@@ -228,12 +225,16 @@ class AgentLoop:
             workspace=self.workspace,
             channel=channel,
             chat_id=chat_id,
+            on_progress=on_progress,
             metadata={"slack": {"thread_ts": metadata.get("thread_ts")}},
             outbound_msg_factory=lambda content: OutboundMessage(
                 channel=channel, chat_id=chat_id, content=content
             ),
         )
-        res_str = str(result)
+        if isinstance(result, (dict, list)):
+            res_str = json.dumps(result, ensure_ascii=False, indent=2)
+        else:
+            res_str = str(result)
         logger.info("✅ Tool finish: {} -> {}", tc.name, res_str[:200] + "..." if len(res_str) > 200 else res_str)
         if on_progress := metadata.get("on_progress"):
              await on_progress(f"✅ Tool finish: {tc.name}")
@@ -468,7 +469,9 @@ class AgentLoop:
         return "\n".join(parts) if parts else None
 
     async def _handle_system_message(self, msg: InboundMessage) -> OutboundMessage:
-        channel, chat_id = msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
+        meta = msg.metadata or {}
+        channel = meta.get("origin_channel", "cli")
+        chat_id = msg.chat_id
         logger.info("Processing system message from {}", msg.sender_id)
         key = f"{channel}:{chat_id}"
         session = self.sessions.get_or_create(key)

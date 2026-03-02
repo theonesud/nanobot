@@ -4,7 +4,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -60,11 +60,12 @@ class SubagentManager:
         origin_chat_id: str = "direct",
         session_key: str | None = None,
         thread_ts: str | None = None,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id, "thread_ts": thread_ts}
-        bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin))
+        bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin, on_progress))
         self._running_tasks[task_id] = bg_task
         if session_key:
             self._session_tasks.setdefault(session_key, set()).add(task_id)
@@ -81,7 +82,7 @@ class SubagentManager:
         return f"Subagent [{display_label}] started (id: {task_id})."
 
     async def _run_subagent(
-        self, task_id: str, task: str, label: str, origin: dict[str, str]
+        self, task_id: str, task: str, label: str, origin: dict[str, str], on_progress: Callable[[str], Awaitable[None]] | None = None
     ) -> None:
         logger.info("Subagent [{}] starting task: {}", task_id, label)
         try:
@@ -120,6 +121,7 @@ class SubagentManager:
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
+                    on_progress=on_progress,
                 )
                 if response.usage:
                     p_tokens = response.usage.get("prompt_tokens", 0)
@@ -166,12 +168,16 @@ class SubagentManager:
                         ]
                     )
                     for tool_call, result in zip(response.tool_calls, results, strict=False):
+                        if isinstance(result, (dict, list)):
+                            res_str = json.dumps(result, ensure_ascii=False, indent=2)
+                        else:
+                            res_str = str(result)
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
                                 "name": tool_call.name,
-                                "content": result,
+                                "content": res_str,
                             }
                         )
                 else:
@@ -194,9 +200,9 @@ class SubagentManager:
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
-            chat_id=f"{origin['channel']}:{origin['chat_id']}",
+            chat_id=origin["chat_id"],
             content=announce_content,
-            metadata={"thread_ts": origin.get("thread_ts")},
+            metadata={"origin_channel": origin["channel"], "thread_ts": origin.get("thread_ts")},
         )
         await self.bus.publish_inbound(msg)
         logger.debug(
