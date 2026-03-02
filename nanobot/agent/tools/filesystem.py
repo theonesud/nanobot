@@ -19,8 +19,15 @@ def _git_commit(path: Path, message: str) -> None:
             .decode()
             .strip()
         )
+        env = os.environ.copy()
+        env["GIT_AUTHOR_NAME"] = "nanobot"
+        env["GIT_AUTHOR_EMAIL"] = "nanobot@ai"
+        env["GIT_COMMITTER_NAME"] = "nanobot"
+        env["GIT_COMMITTER_EMAIL"] = "nanobot@ai"
         subprocess.run(["git", "add", str(path)], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", message], cwd=root, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", message], cwd=root, env=env, check=True, capture_output=True
+        )
     except Exception:
         pass
 
