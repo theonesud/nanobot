@@ -1,9 +1,10 @@
 import ast
+import re
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.filesystem import _git_commit, _resolve_path
+from nanobot.agent.tools.filesystem import _atomic_write, _git_commit, _resolve_path
 
 
 class RewriteCodeTool(Tool):
@@ -44,15 +45,15 @@ class RewriteCodeTool(Tool):
             # Preserve indentation of the original symbol if possible
             indent = ""
             if start < len(lines):
-                m = __import__("re").match(r"^\s*", lines[start])
+                m = re.match(r"^\s*", lines[start])
                 indent = m.group(0) if m else ""
             indented_code = "\n".join(
-                [(indent + line if i > 0 else line) for i, line in enumerate(new_code.splitlines())]
+                [(indent + line) for line in new_code.splitlines()]
             )
             if not indented_code.endswith("\n") and end < len(lines):
                 indented_code += "\n"
             lines[start:end] = [indented_code]
-            file_path.write_text("".join(lines), encoding="utf-8")
+            _atomic_write(file_path, "".join(lines))
             _git_commit(file_path, f"nanobot: rewrite {symbol} in {file_path.name}")
             return f"Successfully rewrote '{symbol}' in {path}"
         except Exception as e:

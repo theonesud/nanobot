@@ -171,7 +171,7 @@ class EditFileTool(Tool):
                 return await asyncio.to_thread(self._not_found_message, old_text, content, path)
             count = content.count(old_text)
             if count > 1:
-                return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
+                return f"Error: old_text appears {count} times. Please provide more context to make it unique."
             new_content = content.replace(old_text, new_text, 1)
             _atomic_write(file_path, new_content)
             _git_commit(file_path, f"nanobot: edit {file_path.name}")

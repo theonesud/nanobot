@@ -1,6 +1,8 @@
 import asyncio
 import json
+import re
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from loguru import logger
 
@@ -99,32 +101,38 @@ class OpenCodeProvider(LLMProvider):
                                 await on_progress(text)
                                 response_streamed = True
                             current_full_text = "".join(full_content)
-                            if '"nanobot_tool_call"' in current_full_text and not tool_calls:
+                            if '"nanobot_tool_call"' in current_full_text:
                                 try:
-                                    import re
-
-                                    match = re.search(
-                                        r"(\{.*\"nanobot_tool_call\".*\})",
+                                    matches = re.finditer(
+                                        r"(\{[\s\S]*?\"nanobot_tool_call\"[\s\S]*?\})",
                                         current_full_text,
-                                        re.DOTALL,
                                     )
-                                    if match:
+                                    for match in matches:
                                         json_str = match.group(1).strip()
-                                        tc_data = json.loads(json_str)
-                                        call = tc_data.get("nanobot_tool_call")
-                                        if call:
-                                            from uuid import uuid4
-                                            logger.info("🛠 OpenCode requested tool call: {}", call["name"])
-                                            tool_calls.append(
-                                                ToolCallRequest(
-                                                    id=f"call_{uuid4().hex[:12]}",
-                                                    name=call["name"],
-                                                    arguments=call.get("arguments", {}),
+                                        try:
+                                            tc_data = json.loads(json_str)
+                                            call = tc_data.get("nanobot_tool_call")
+                                            if call and not any(
+                                                c.arguments == call.get("arguments")
+                                                and c.name == call["name"]
+                                                for c in tool_calls
+                                            ):
+                                                logger.info(
+                                                    "🛠 OpenCode requested tool call: {}",
+                                                    call["name"],
                                                 )
-                                            )
-                                            finish_reason = "tool_calls"
+                                                tool_calls.append(
+                                                    ToolCallRequest(
+                                                        id=f"call_{uuid4().hex[:12]}",
+                                                        name=call["name"],
+                                                        arguments=call.get("arguments", {}),
+                                                    )
+                                                )
+                                                finish_reason = "tool_calls"
+                                        except json.JSONDecodeError:
+                                            continue
                                 except Exception as e:
-                                    logger.debug("Failed to parse tool call JSON: {}", e)
+                                    logger.debug("Failed to extract tool calls: {}", e)
                         elif evt_type == "tool_use":
                             tool_name = part.get("tool", "tool")
                             state = part.get("state", {})

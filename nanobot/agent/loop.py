@@ -13,6 +13,7 @@ from loguru import logger
 from nanobot.agent.auditor import CommandAuditor
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.factory import register_all_tools
 from nanobot.agent.tools.mcp import connect_mcp_servers
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -118,7 +119,6 @@ class AgentLoop:
                 self._consolidation_locks.pop(k, None)
 
     def _register_default_tools(self) -> None:
-        from .tools.factory import register_all_tools
         register_all_tools(
             registry=self.tools,
             workspace=self.workspace,
@@ -163,11 +163,22 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(
+        self,
+        channel: str,
+        chat_id: str,
+        message_id: str | None = None,
+        thread_ts: str | None = None,
+    ) -> None:
         for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    if name == "message":
+                        tool.set_context(channel, chat_id, message_id)
+                    elif name == "spawn":
+                        tool.set_context(channel, chat_id, thread_ts=thread_ts)
+                    else:
+                        tool.set_context(channel, chat_id)
 
     @staticmethod
     def _tool_hint(tool_calls: list[ToolCallRequest]) -> str:
@@ -461,7 +472,12 @@ class AgentLoop:
         logger.info("Processing system message from {}", msg.sender_id)
         key = f"{channel}:{chat_id}"
         session = self.sessions.get_or_create(key)
-        self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(
+            channel,
+            chat_id,
+            msg.metadata.get("message_id"),
+            msg.metadata.get("thread_ts"),
+        )
         logger.info("🏗 Building context for system message session {}", key)
         history = session.get_history(max_messages=self.memory_window)
         messages = self.context.build_messages(
@@ -480,7 +496,10 @@ class AgentLoop:
         self._save_turn(session, all_msgs, len(messages) - 1)
         await self.sessions.save_async(session)
         return OutboundMessage(
-            channel=channel, chat_id=chat_id, content=final_content or "Background task completed."
+            channel=channel,
+            chat_id=chat_id,
+            content=final_content or "Background task completed.",
+            metadata={"thread_ts": msg.metadata.get("thread_ts")},
         )
 
     async def _bus_progress(
@@ -589,7 +608,12 @@ class AgentLoop:
                 content="🤖 nanobot commands:\n/new — Clear session\n/stop — Stop active tasks\n/help — Show commands",
             )
         self._check_consolidation(session)
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(
+            msg.channel,
+            msg.chat_id,
+            msg.metadata.get("message_id"),
+            msg.metadata.get("thread_ts"),
+        )
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()

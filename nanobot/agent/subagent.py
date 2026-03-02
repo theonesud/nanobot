@@ -16,6 +16,7 @@ from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.database import Database
 from nanobot.utils.helpers import get_model_pricing, strip_think
+from nanobot.agent.tools.factory import register_all_tools
 
 if TYPE_CHECKING:
     pass
@@ -58,10 +59,11 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        thread_ts: str | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        origin = {"channel": origin_channel, "chat_id": origin_chat_id}
+        origin = {"channel": origin_channel, "chat_id": origin_chat_id, "thread_ts": thread_ts}
         bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin))
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -84,7 +86,6 @@ class SubagentManager:
         logger.info("Subagent [{}] starting task: {}", task_id, label)
         try:
             tools = ToolRegistry()
-            from .tools.factory import register_all_tools
             register_all_tools(
                 registry=tools,
                 workspace=self.workspace,
@@ -195,6 +196,7 @@ class SubagentManager:
             sender_id="subagent",
             chat_id=f"{origin['channel']}:{origin['chat_id']}",
             content=announce_content,
+            metadata={"thread_ts": origin.get("thread_ts")},
         )
         await self.bus.publish_inbound(msg)
         logger.debug(

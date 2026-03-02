@@ -1,5 +1,7 @@
 import sqlite3
 import time
+from datetime import datetime
+from datetime import time as dt_time
 from pathlib import Path
 
 from loguru import logger
@@ -51,7 +53,7 @@ class Database:
             logger.error("Failed to log task cost: {}", e)
 
     def get_daily_cost(self) -> float:
-        start_of_day = int(time.time() // 86400 * 86400)
+        start_of_day = int(datetime.combine(datetime.now(), dt_time.min).timestamp())
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
