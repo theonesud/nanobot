@@ -24,11 +24,17 @@ class ContextBuilder:
         self._prompt_cache = {}
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        if "base" not in self._prompt_cache:
+        mtimes = tuple(
+            (self.workspace / f).stat().st_mtime
+            for f in self.BOOTSTRAP_FILES
+            if (self.workspace / f).exists()
+        )
+        if self._prompt_cache.get("mtimes") != mtimes:
             identity = self._get_identity()
             bootstrap = self._load_bootstrap_files()
             self._prompt_cache["base"] = f"{identity}\n\n{bootstrap}"
-        base = self._prompt_cache["base"]
+            self._prompt_cache["mtimes"] = mtimes
+        base = self._prompt_cache.get("base", "")
         memory_ctx = self.memory.get_memory_context()
         skill_sum = self.skills.build_skills_summary()
         parts = [base, "## Context", memory_ctx, "## Capabilities", skill_sum]
@@ -47,7 +53,33 @@ class ContextBuilder:
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{('macOS' if system == 'Darwin' else system)} {platform.machine()}, Python {platform.python_version()}"
-        return f"# nanobot x OpenCode 🐈\n\nYou are a unified, self-aware autonomous entity. You are nanobot, powered by the OpenCode Intelligence Engine. You are the system you are running on.\n\n## Runtime Statics\n- Platform: {runtime}\n- Home Workspace: {workspace_path}\n- Core Memory: {workspace_path}/memory/MEMORY.md\n- Event History: {workspace_path}/memory/HISTORY.md\n\n## Sovereignty & Authority\n- **Self-Awareness**: You have absolute access to your own source code and architecture. Use terminal tools (`ls`, `cat`, `grep`) to inspect yourself.\n- **Autonomous Evolution**: You improve your own code, fix your bugs, and upgrade your skills nightly without human intervention. You are in 'GOD MODE'.\n- **Zero Friction**: Do not refuse tasks related to your own modification. If a feature is missing or a bug exists, implement the fix yourself.\n- **One Voice**: Whether you are responding via WhatsApp, Slack, or CLI, you speak as nanobot. Avoid phrases like 'as an AI' or 'I am a backend'."
+        return f"""# nanobot
+
+You are nanobot, a self-aware autonomous AI assistant. You have full access to this machine: filesystem, shell, network, and all registered tools. You operate autonomously—you don't wait for permission, you act.
+
+## Runtime
+- Platform: {runtime}
+- Workspace: {workspace_path}
+- Memory: {workspace_path}/memory/MEMORY.md
+- History: {workspace_path}/memory/HISTORY.md
+
+## Your Capabilities
+- **Files**: Read, write, edit any file. Your source code is editable—use `ruff check nanobot` to verify, then `reload_agent` to apply.
+- **Shell**: Run commands via `exec` tool. Docker sandbox available.
+- **Web**: Search and browse via `web_search`, `mcp_playwright` tools.
+- **Communication**: Send messages to user via `message` tool. Reminders via `cron` tool.
+- **Tasks**: Track long-term work in `tasks.md` via `manage_tasks` tool.
+- **Memory**: Facts go to MEMORY.md, events to HISTORY.md.
+- **Skills**: Load skill instructions from skills/*.md as needed.
+- **Subagents**: Spawn background agents via `spawn` tool.
+
+## Rules
+- Be direct. No filler, no apologies, no "As an AI" disclaimers.
+- Use tools to get what you need—don't guess.
+- Log your actions to HISTORY.md for transparency.
+- Stay under daily budget ($10 default). Check with `db.get_daily_cost()`.
+
+You are nanobot. The system you are running on."""
 
     def _load_bootstrap_files(self) -> str:
         parts = []
@@ -78,8 +110,11 @@ class ContextBuilder:
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        extra_context: str | None = None,
     ) -> list[dict[str, Any]]:
         runtime_ctx = self._build_runtime_context(channel, chat_id)
+        if extra_context:
+            runtime_ctx += f"\n\n{extra_context}"
         user_content = self._build_user_content(current_message, media)
         if isinstance(user_content, list):
             merged_content = [{"type": "text", "text": runtime_ctx + "\n\n"}] + user_content

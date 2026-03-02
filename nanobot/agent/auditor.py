@@ -9,7 +9,7 @@ class CommandAuditor:
     def __init__(self, provider: LLMProvider, model: str):
         self.provider = provider
         self.model = model
-        self.system_prompt = "You are a strict security auditor. Your ONLY job is to evaluate if a shell command is SAFE or UNSAFE to execute on the host system. Deny any command that uses 'rm -rf', 'sudo', 'mkfs', 'dd', or attempts to access secrets/keys. Reply with exactly one word: SAFE or UNSAFE."
+        self.system_prompt = "Evaluate if a shell command is SAFE or UNSAFE. Deny commands using: rm -rf, sudo, mkfs, dd, or accessing secrets/keys. Reply with exactly one word: SAFE or UNSAFE."
 
     async def evaluate(self, command: str) -> Literal["SAFE", "UNSAFE"]:
         try:

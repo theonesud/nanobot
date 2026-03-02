@@ -33,11 +33,17 @@ class SlackChannel(BaseChannel):
         self._app.event("app_mention")(self._on_bolt_event)
         self._app.action(re.compile("^(approve|reject)_.*"))(self._handle_action)
         self._handler = AsyncSocketModeHandler(self._app, self.config.app_token)
-        try:
-            self._bot_user_id = (await self._app.client.auth_test()).get("user_id")
-            logger.info("Slack bot connected as {}", self._bot_user_id)
-        except Exception as e:
-            logger.warning("Slack auth_test failed: {}", e)
+
+        async def _fetch_bot_user_id() -> None:
+            while not self._bot_user_id and getattr(self, "_running", True):
+                try:
+                    self._bot_user_id = (await self._app.client.auth_test()).get("user_id")
+                    logger.info("Slack bot connected as {}", self._bot_user_id)
+                except Exception as e:
+                    logger.warning("Slack auth_test failed: {}. Retrying in 5s...", e)
+                    await asyncio.sleep(5)
+
+        asyncio.create_task(_fetch_bot_user_id())
         logger.info("Starting Slack Socket Mode client via Bolt...")
         asyncio.create_task(self._listen_for_approvals())
         await self._handler.start_async()
@@ -154,7 +160,7 @@ class SlackChannel(BaseChannel):
             )
             await self.bus.publish_approval_response(
                 ApprovalResponse(
-                    id=action_id.replace("approve_", "").replace("reject_", ""),
+                    id=action_id.removeprefix("approve_").removeprefix("reject_"),
                     approved=approved,
                 )
             )

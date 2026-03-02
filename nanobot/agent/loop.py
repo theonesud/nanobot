@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from contextlib import AsyncExitStack
 from datetime import datetime
@@ -425,6 +426,33 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
 
+    def _get_active_state(self) -> str | None:
+        parts = []
+        if self.cron_service:
+            jobs = self.cron_service.list_jobs()
+            if jobs:
+                parts.append("## Active Cron Jobs")
+                for j in jobs:
+                    parts.append(f"- {j.name} (id: {j.id}, type: {j.schedule.kind})")
+
+        tasks_dir = self.workspace / "tasks"
+        if tasks_dir.exists():
+            tasks = []
+            for f in tasks_dir.glob("*.json"):
+                try:
+                    task = json.loads(f.read_text())
+                    if task.get("status") != "done":
+                        tasks.append(task)
+                except Exception:
+                    pass
+            if tasks:
+                if parts:
+                    parts.append("")
+                parts.append("## Active Tasks (from manage_tasks)")
+                for t in tasks:
+                    parts.append(f"- [{t.get('status')}] {t.get('title')} (id: {t.get('id')})")
+        return "\n".join(parts) if parts else None
+
     async def _handle_system_message(self, msg: InboundMessage) -> OutboundMessage:
         channel, chat_id = msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
         logger.info("Processing system message from {}", msg.sender_id)
@@ -433,7 +461,11 @@ class AgentLoop:
         self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
         history = session.get_history(max_messages=self.memory_window)
         messages = self.context.build_messages(
-            history=history, current_message=msg.content, channel=channel, chat_id=chat_id
+            history=history,
+            current_message=msg.content,
+            channel=channel,
+            chat_id=chat_id,
+            extra_context=self._get_active_state(),
         )
         messages[0]["_nanobot_metadata"] = {
             "channel": channel,
@@ -564,6 +596,7 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            extra_context=self._get_active_state(),
         )
         initial_messages[0]["_nanobot_metadata"] = {
             "channel": msg.channel,
@@ -599,7 +632,7 @@ class AgentLoop:
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         for m in messages[skip:]:
-            entry = dict(m)
+            entry = copy.deepcopy(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "tool" and isinstance(content, str) and len(content) > 4000:
                 entry["content"] = content[:4000] + "\n... (truncated)"

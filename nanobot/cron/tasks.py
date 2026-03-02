@@ -5,7 +5,8 @@ from loguru import logger
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import OutboundMessage
-
+from collections import deque
+import re
 
 async def summarize_git_diffs(agent: AgentLoop, channel: str = "slack", chat_id: str = "general"):
     logger.info("Heartbeat: starting git diff summary task")
@@ -54,15 +55,19 @@ async def nightly_soul_update(agent: AgentLoop):
         return
     try:
         with open(history_file, "r", encoding="utf-8") as f:
-            all_logs = f.readlines()
+            all_logs = list(deque(f, maxlen=500))
         updated_soul = await agent.process_direct(
-            f"Review the following daily activity logs and your current core persona (SOUL.md). Identify any new preferences, recurring topics, or important decisions made by the user today. Provide an UPDATED version of SOUL.md that incorporates these new insights while preserving its core structure and existing knowledge. ONLY respond with the markdown content of the updated SOUL.md.\n\n## Current SOUL.md\n{(soul_file.read_text(encoding='utf-8') if soul_file.exists() else '')}\n\n## Daily Logs\n{''.join(all_logs[-500:])}",
+            f"Review the following daily activity logs and your current core persona (SOUL.md). Identify any new preferences, recurring topics, or important decisions made by the user today. Provide an UPDATED version of SOUL.md that incorporates these new insights while preserving its core structure and existing knowledge. ONLY respond with the markdown content of the updated SOUL.md.\n\n## Current SOUL.md\n{(soul_file.read_text(encoding='utf-8') if soul_file.exists() else '')}\n\n## Daily Logs\n{''.join(all_logs)}",
             session_key="background:soul_update",
             channel="system",
             chat_id="soul_update",
         )
         if updated_soul and ("---" in updated_soul or "# " in updated_soul):
-            soul_file.write_text(updated_soul, encoding="utf-8")
+            content = updated_soul.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```[a-zA-Z]*\n", "", content)
+                content = re.sub(r"\n```$", "", content)
+            soul_file.write_text(content.strip(), encoding="utf-8")
             from nanobot.agent.tools.filesystem import _git_commit
 
             _git_commit(soul_file, "nanobot: nightly soul update")
@@ -77,7 +82,8 @@ async def nightly_self_optimization(agent: AgentLoop):
     if not history_file.exists():
         return
     try:
-        logs = history_file.read_text(encoding="utf-8").splitlines()[-1000:]
+        with open(history_file, "r", encoding="utf-8") as f:
+            logs = [line.strip() for line in deque(f, maxlen=1000)]
         planning_prompt = (
             "Review your recent activity logs and current codebase. Identify one specific way you can improve yourself today. "
             "This could be: (1) Creating a new skill/tool for a recurring task, (2) Refactoring a clunky piece of your own code, "

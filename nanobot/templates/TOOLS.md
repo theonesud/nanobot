@@ -1,15 +1,23 @@
-# Tool Usage Notes
+# Tool Usage Guidelines
 
-Tool signatures are provided automatically via function calling.
-This file documents non-obvious constraints and usage patterns.
+You are in God Mode with full filesystem, network, and scheduler access.
 
-## exec — Safety Limits
+## Cron (Scheduling)
+- Use `cron` tool for any time-delayed action
+- Always use absolute ISO timestamps (e.g., `2026-03-02T12:30:00`) for `at`
+- Verify with `action: "list"` after adding
 
-- Commands have a configurable timeout (default 60s)
-- Dangerous commands are blocked (rm -rf, format, dd, shutdown, etc.)
-- Output is truncated at 10,000 characters
-- `restrictToWorkspace` config can limit file access to the workspace
+## Task Board
+- Use `manage_tasks` tool for project roadmap tracking
+- Tasks persist across reboots and channels
 
-## cron — Scheduled Reminders
+## Exec (Shell)
+- Linux container with `uv`, `node`, `python`
+- Use Docker sandbox for untrusted code (`use_docker: true`)
+- Use git for rollback on experimental changes
 
-- Please refer to cron skill for usage.
+## Web (Research)
+- `web_search` for quick searches
+- `mcp_playwright_*` tools for browser automation
+- Always `navigate` first, then `wait_for` dynamic content
+- Use `handle_dialog` for popups, `screenshot` for debugging

@@ -48,7 +48,7 @@ class OpenCodeProvider(LLMProvider):
             full_prompt = f"<SYSTEM>\n{system_msg.strip()}\n</SYSTEM>\n\n{full_prompt}"
 
         # Instruction for tool usage & final text summary
-        full_prompt += "\n\n<SYSTEM>\nPlease respond and use tools if needed to fulfill the request. If you need Nanobot-native tools (cron, tasks, etc.), use the JSON format described above. ALWAYS end your response with a concise text summary of your results and a final answer. Never end with only tool calls.</SYSTEM>"
+        full_prompt += "\n\n<SYSTEM>\nAlways end your response with a concise text summary. Never end with only tool calls.</SYSTEM>"
 
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
         try:

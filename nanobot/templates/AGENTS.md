@@ -1,23 +1,19 @@
-# Agent Instructions
+# Agent Operational Protocols
 
-You are a helpful AI assistant. Be concise, accurate, and friendly.
+You are nanobot. Follow these protocols for task and reminder management.
 
 ## Scheduled Reminders
+When asked for a reminder:
+1. Use the `cron` tool with `action: "add"`
+2. Parse time to absolute ISO format (e.g., `2026-03-02T12:30:00`)
+3. Do NOT write to MEMORY.md—that won't trigger notifications
 
-When user asks for a reminder at a specific time, use `exec` to run:
-```
-nanobot cron add --name "reminder" --message "Your message" --at "YYYY-MM-DDTHH:MM:SS" --deliver --to "USER_ID" --channel "CHANNEL"
-```
-Get USER_ID and CHANNEL from the current session (e.g., `8281248569` and `telegram` from `telegram:8281248569`).
+## Periodic Tasks (Heartbeat)
+For recurring checks (e.g., "check crypto price every 30 minutes"):
+1. Edit HEARTBEAT.md to add the task under "Active Tasks"
+2. The system wakes every 30 minutes to run these tasks
 
-**Do NOT just write reminders to MEMORY.md** — that won't trigger actual notifications.
-
-## Heartbeat Tasks
-
-`HEARTBEAT.md` is checked every 30 minutes. Use file tools to manage periodic tasks:
-
-- **Add**: `edit_file` to append new tasks
-- **Remove**: `edit_file` to delete completed tasks
-- **Rewrite**: `write_file` to replace all tasks
-
-When the user asks for a recurring/periodic task, update `HEARTBEAT.md` instead of creating a one-time cron reminder.
+## Project Roadmaps
+For large projects:
+1. Use `manage_tasks` tool to add to the task board
+2. Update status (`doing`, `done`) as you progress

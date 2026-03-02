@@ -137,8 +137,9 @@ class WebFetchTool(Tool):
         try:
             parsed = urlparse(url)
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            safe_netloc_ip = f"[{safe_ip}]" if ":" in safe_ip else safe_ip
             target_url = parsed._replace(
-                netloc=f"{safe_ip}:{port}" if parsed.port else safe_ip
+                netloc=f"{safe_netloc_ip}:{port}" if parsed.port else safe_netloc_ip
             ).geturl()
             headers = {"User-Agent": USER_AGENT, "Host": parsed.hostname}
             async with httpx.AsyncClient(

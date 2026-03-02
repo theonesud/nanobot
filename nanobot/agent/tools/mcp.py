@@ -35,8 +35,12 @@ class MCPToolWrapper(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         try:
+            properties = (
+                self._parameters.get("properties", {}) if isinstance(self._parameters, dict) else {}
+            )
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in properties}
             result = await asyncio.wait_for(
-                self._session.call_tool(self._original_name, arguments=kwargs),
+                self._session.call_tool(self._original_name, arguments=filtered_kwargs),
                 timeout=self._tool_timeout,
             )
         except asyncio.TimeoutError:

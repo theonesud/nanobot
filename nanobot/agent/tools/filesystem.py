@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
-
+import asyncio
 from nanobot.agent.tools.base import Tool
 
 
@@ -166,7 +166,8 @@ class EditFileTool(Tool):
                 return f"Error: File not found: {path}"
             content = file_path.read_text(encoding="utf-8")
             if old_text not in content:
-                return self._not_found_message(old_text, content, path)
+
+                return await asyncio.to_thread(self._not_found_message, old_text, content, path)
             count = content.count(old_text)
             if count > 1:
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."

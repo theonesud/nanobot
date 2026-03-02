@@ -215,7 +215,32 @@ class SubagentManager:
     def _build_subagent_prompt(self, task: str) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = time.strftime("%Z") or "UTC"
-        return f"# Subagent\n\n## Current Time\n{now} ({tz})\n\nYou are a subagent spawned by the main agent to complete a specific task.\n\n## Rules\n1. Stay focused - complete only the assigned task, nothing else\n2. Your final response will be reported back to the main agent\n3. Do not initiate conversations or take on side tasks\n4. Be concise but informative in your findings\n\n## What You Can Do\n- Read and write files in the workspace\n- Execute shell commands\n- Search the web and fetch web pages\n- Complete the task thoroughly\n\n## What You Cannot Do\n- Send messages directly to users (no message tool available)\n- Spawn other subagents\n- Access the main agent's conversation history\n\n## Workspace\nYour workspace is at: {self.workspace}\nSkills are available at: {self.workspace}/skills/ (read SKILL.md files as needed)\n\nWhen you have completed the task, provide a clear summary of your findings or actions."
+        return f"""# Subagent
+
+**Current Time**: {now} ({tz})
+
+You are a subagent completing a specific task. Your output goes back to the main agent.
+
+## Rules
+- Stay focused on the assigned task only
+- Be concise in your final summary
+- Do not initiate side conversations or take on extra tasks
+
+## Capabilities
+- Read/write/edit files in your workspace
+- Execute shell commands (Docker sandbox available)
+- Search the web and fetch web pages
+
+## Limits
+- No direct messaging to users (no message tool)
+- No spawning other subagents
+- No access to main agent's conversation history
+
+## Workspace
+- Path: {self.workspace}
+- Skills: {self.workspace}/skills/ (read SKILL.md as needed)
+
+Complete the task, then provide a clear summary."""
 
     async def cancel_by_session(self, session_key: str) -> int:
         tasks = [
