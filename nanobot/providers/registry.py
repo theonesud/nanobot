@@ -280,22 +280,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         strip_model_prefix=False,
         model_overrides=(),
     ),
-    ProviderSpec(
-        name="groq",
-        keywords=("groq",),
-        env_key="GROQ_API_KEY",
-        display_name="Groq",
-        litellm_prefix="groq",
-        skip_prefixes=("groq/",),
-        env_extras=(),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="",
-        strip_model_prefix=False,
-        model_overrides=(),
-    ),
 )
 
 

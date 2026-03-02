@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider, LLMResponse
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 class OpenCodeProvider(LLMProvider):
@@ -32,22 +32,31 @@ class OpenCodeProvider(LLMProvider):
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content") or ""
-            if role == "system":
+            if role == "system" or role == "tool":
                 continue
             prompt_parts.append(f"<{role.upper()}>\n{content}\n</{role.upper()}>")
-        system_msg = next((m.get("content") for m in messages if m.get("role") == "system"), None)
+
+        system_msg = next((m.get("content") for m in messages if m.get("role") == "system"), "")
+        if tools:
+            tool_desc = "\n".join(
+                [f"- {t['function']['name']}: {t['function']['description']}" for t in tools]
+            )
+            system_msg += f'\n\n## Available Nanobot Tools\nYou can use these Nanobot-native tools by responding with a JSON block: `{{ "nanobot_tool_call": {{ "name": "tool_name", "arguments": {{...}} }} }}`. When you use a Nanobot tool, do not start other tasks until you receive the result.\n\n{tool_desc}'
+
         full_prompt = "\n\n".join(prompt_parts)
         if system_msg:
-            full_prompt = f"<SYSTEM>\n{system_msg}\n</SYSTEM>\n\n{full_prompt}"
-        full_prompt += "\n\n<SYSTEM>\nPlease respond to the last <USER> message.</SYSTEM>"
-        if tools:
-            logger.debug("OpenCodeProvider ignores Nanobot tools.")
+            full_prompt = f"<SYSTEM>\n{system_msg.strip()}\n</SYSTEM>\n\n{full_prompt}"
+
+        # Instruction for tool usage & final text summary
+        full_prompt += "\n\n<SYSTEM>\nPlease respond and use tools if needed to fulfill the request. If you need Nanobot-native tools (cron, tasks, etc.), use the JSON format described above. ALWAYS end your response with a concise text summary of your results and a final answer. Never end with only tool calls.</SYSTEM>"
+
         args = [self.bin_path, "run", "--message", full_prompt, "--format", "json"]
         try:
             process = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             full_content = []
+            tool_calls = []
             usage = {}
             finish_reason = "stop"
             step_count = 0
@@ -73,7 +82,35 @@ class OpenCodeProvider(LLMProvider):
                             if on_progress:
                                 await on_progress(f"⚙️ opencode: Thinking (Step {step_count})...")
                         elif evt_type == "text":
-                            full_content.append(part.get("text", ""))
+                            text = part.get("text", "")
+                            full_content.append(text)
+                            current_full_text = "".join(full_content)
+                            if '"nanobot_tool_call"' in current_full_text and not tool_calls:
+                                try:
+                                    import re
+
+                                    match = re.search(
+                                        r"(\{.*\"nanobot_tool_call\".*\})",
+                                        current_full_text,
+                                        re.DOTALL,
+                                    )
+                                    if match:
+                                        json_str = match.group(1).strip()
+                                        tc_data = json.loads(json_str)
+                                        call = tc_data.get("nanobot_tool_call")
+                                        if call:
+                                            from uuid import uuid4
+
+                                            tool_calls.append(
+                                                ToolCallRequest(
+                                                    id=f"call_{uuid4().hex[:12]}",
+                                                    name=call["name"],
+                                                    arguments=call.get("arguments", {}),
+                                                )
+                                            )
+                                            finish_reason = "tool_calls"
+                                except Exception:
+                                    pass
                         elif evt_type == "tool_use":
                             if on_progress:
                                 tool_name = part.get("tool", "tool")
@@ -110,7 +147,10 @@ class OpenCodeProvider(LLMProvider):
                 )
                 norm_usage["total_tokens"] = usage.get("total", 0) or usage.get("total_tokens", 0)
             return LLMResponse(
-                content="".join(full_content), finish_reason=finish_reason, usage=norm_usage
+                content="".join(full_content),
+                tool_calls=tool_calls,
+                finish_reason="tool_calls" if tool_calls else finish_reason,
+                usage=norm_usage,
             )
         except Exception as e:
             logger.exception("OpenCode CLI execution failed")

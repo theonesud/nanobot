@@ -60,7 +60,7 @@ class TestChannelsConfig:
         assert config.telegram.enabled is False
         assert config.discord.enabled is False
         assert config.email.enabled is False
-        assert config.whatsapp.enabled is False
+        assert config.whatsapp.enabled is True
 
     def test_enable_slack(self):
         config = ChannelsConfig(slack=SlackConfig(enabled=True, bot_token="xoxb-test"))

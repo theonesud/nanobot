@@ -17,9 +17,11 @@ from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTo
 from nanobot.agent.tools.mcp import connect_mcp_servers
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.rewrite import RewriteCodeTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.system import ReloadTool
+from nanobot.agent.tools.tasks import TaskTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -53,6 +55,7 @@ class AgentLoop:
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
+        browser_data_dir: str | None = None,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
@@ -71,6 +74,8 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.browser_data_dir = browser_data_dir
+        self.session_manager = session_manager
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -115,7 +120,7 @@ class AgentLoop:
 
     def _register_default_tools(self) -> None:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
-        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
+        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, RewriteCodeTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
         self.tools.register(
             ExecTool(
@@ -125,6 +130,8 @@ class AgentLoop:
                 path_append=self.exec_config.path_append,
                 bus=self.bus,
                 auditor=self.auditor,
+                use_docker=self.exec_config.use_docker,
+                docker_image=self.exec_config.docker_image,
             )
         )
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
@@ -133,6 +140,7 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+        self.tools.register(TaskTool(workspace=self.workspace))
         self.tools.register(ReloadTool())
 
     async def _connect_mcp(self) -> None:
@@ -143,9 +151,10 @@ class AgentLoop:
             and self.provider.__class__.__name__ == "OpenCodeProvider"
         ):
             logger.info("Auto-configuring Playwright MCP for OpenCode intelligence engine...")
-            self._mcp_servers["playwright"] = MCPServerConfig(
-                command="npx", args=["-y", "@playwright/mcp", "--headless"]
-            )
+            args = ["-y", "@playwright/mcp", "--headless"]
+            if self.browser_data_dir:
+                args = ["-y", "@playwright/mcp", "--user-data-dir", self.browser_data_dir]
+            self._mcp_servers["playwright"] = MCPServerConfig(command="npx", args=args)
         if not self._mcp_servers:
             return
         self._mcp_connecting = True
@@ -175,14 +184,33 @@ class AgentLoop:
     def _tool_hint(tool_calls: list[ToolCallRequest]) -> str:
         def tc_hint(tc: ToolCallRequest) -> str:
             args = tc.arguments
-            if tc.name in ("read_file", "write_file", "edit_file"):
-                return f"{tc.name}({args.get('path', '...')})"
-            if tc.name == "exec":
+            name = tc.name
+            if name == "read_file":
+                return f"📖 Reading {args.get('path', 'file')}"
+            if name == "write_file":
+                return f"📝 Writing {args.get('path', 'file')}"
+            if name == "edit_file":
+                return f"🔨 Editing {args.get('path', 'file')}"
+            if name in ("rewrite_code", "rewrite_file"):
+                return f"🧬 Refactoring {args.get('path', 'file')}"
+            if name == "exec":
                 cmd = args.get("command", "")
-                return f"exec({cmd[:30]}...)" if len(cmd) > 30 else f"exec({cmd})"
-            return f"{tc.name}({next(iter(args.values()), '...') if args else '...'})"
+                display_cmd = cmd[:40] + "..." if len(cmd) > 40 else cmd
+                return f"⌨️ Executing: {display_cmd}"
+            if name == "web_search":
+                return f"🌐 Searching web: {args.get('query', '...')}"
+            if name == "browser_navigate":
+                return f"🌍 Navigating to {args.get('url', '...')}"
+            if name == "manage_tasks":
+                action = args.get("action", "manage")
+                return f"📋 Task Board: {action} {args.get('id', '')}"
+            if name == "add_job":
+                return f"⏰ Scheduling: {args.get('name', 'reminder')}"
+            if name == "spawn_agent":
+                return f"🤖 Spawning sub-agent: {args.get('name', 'helper')}"
+            return f"⚙️ {name}({next(iter(args.values()), '...') if args else '...'})"
 
-        return ", ".join((tc_hint(tc) for tc in tool_calls))
+        return " | ".join((tc_hint(tc) for tc in tool_calls))
 
     async def _execute_single_tool(
         self, tc: Any, metadata: dict, tools_used: list[str]
@@ -250,7 +278,7 @@ class AgentLoop:
                     clean = strip_think(response.content)
                     if clean:
                         await on_progress(clean)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                    await on_progress(f"⚙️ {self._tool_hint(response.tool_calls)}", tool_hint=True)
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -302,6 +330,10 @@ class AgentLoop:
                 continue
             if msg.content.strip().lower() == "/stop":
                 await self._handle_stop(msg)
+            elif (cmd_lower := msg.content.strip().lower()).startswith(
+                ("/rollback", "/git-rollback")
+            ):
+                await self._handle_rollback(msg, cmd_lower)
             else:
                 task = asyncio.create_task(self._dispatch(msg))
                 self._active_tasks.setdefault(msg.session_key, []).append(task)
@@ -324,6 +356,25 @@ class AgentLoop:
         sub_cancelled = await self.subagents.cancel_by_session(msg.session_key)
         total = cancelled + sub_cancelled
         content = f"⏹ Stopped {total} task(s)." if total else "No active task to stop."
+        await self.bus.publish_outbound(
+            OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+        )
+
+    async def _handle_rollback(self, msg: InboundMessage, cmd: str) -> None:
+        import subprocess
+
+        parts = cmd.split()
+        n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        try:
+            subprocess.run(
+                ["git", "reset", "--hard", f"HEAD~{n}"],
+                cwd=str(self.workspace),
+                check=True,
+                capture_output=True,
+            )
+            content = f"⏪ Rolled back to {n} commit(s) ago."
+        except Exception as e:
+            content = f"❌ Rollback failed: {e}"
         await self.bus.publish_outbound(
             OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
         )

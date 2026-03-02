@@ -74,9 +74,12 @@ class SlackChannel(BaseChannel):
         if not self._app:
             return
         try:
+            content = self._to_mrkdwn(msg.content)
+            if msg.metadata.get("_progress"):
+                content = f"_{content}_"
             await self._app.client.chat_postMessage(
                 channel=msg.chat_id,
-                text=self._to_mrkdwn(msg.content),
+                text=content,
                 thread_ts=msg.metadata.get("thread_ts"),
             )
         except Exception as e:

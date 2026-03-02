@@ -13,7 +13,6 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import TelegramConfig
-from nanobot.providers.transcription import GroqTranscriptionProvider
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -79,10 +78,9 @@ class TelegramChannel(BaseChannel):
         BotCommand("help", "Show available commands"),
     ]
 
-    def __init__(self, config: TelegramConfig, bus: MessageBus, groq_api_key: str = ""):
+    def __init__(self, config: TelegramConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
-        self.groq_api_key = groq_api_key
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}
         self._typing_tasks: dict[str, asyncio.Task] = {}
@@ -286,16 +284,7 @@ class TelegramChannel(BaseChannel):
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))
                 media_paths.append(str(file_path))
-                if media_type == "voice" or media_type == "audio":
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
-                    if transcription:
-                        logger.info("Transcribed {}: {}...", media_type, transcription[:50])
-                        content_parts.append(f"[transcription: {transcription}]")
-                    else:
-                        content_parts.append(f"[{media_type}: {file_path}]")
-                else:
-                    content_parts.append(f"[{media_type}: {file_path}]")
+                content_parts.append(f"[{media_type}: {file_path}]")
                 logger.debug("Downloaded {} to {}", media_type, file_path)
             except Exception as e:
                 logger.error("Failed to download media: {}", e)

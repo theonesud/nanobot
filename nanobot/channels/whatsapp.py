@@ -60,7 +60,10 @@ class WhatsAppChannel(BaseChannel):
             logger.warning("WhatsApp bridge not connected")
             return
         try:
-            payload = {"type": "send", "to": msg.chat_id, "text": msg.content}
+            content = msg.content
+            if msg.metadata.get("_progress"):
+                content = f"_{content}_"
+            payload = {"type": "send", "to": msg.chat_id, "text": content}
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception as e:
             logger.error("Error sending WhatsApp message: {}", e)
@@ -73,17 +76,16 @@ class WhatsAppChannel(BaseChannel):
             return
         msg_type = data.get("type")
         if msg_type == "message":
+            from_me = data.get("fromMe", False)
+            if not self.config.allow_from and not from_me:
+                return
+
             pn = data.get("pn", "")
             sender = data.get("sender", "")
             content = data.get("content", "")
             user_id = pn if pn else sender
             sender_id = user_id.split("@")[0] if "@" in user_id else user_id
-            logger.info("Sender {}", sender)
             if content == "[Voice Message]":
-                logger.info(
-                    "Voice message received from {}, but direct download from bridge is not yet supported.",
-                    sender_id,
-                )
                 content = "[Voice Message: Transcription not available for WhatsApp yet]"
             await self._handle_message(
                 sender_id=sender_id,
@@ -93,15 +95,20 @@ class WhatsAppChannel(BaseChannel):
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),
                     "is_group": data.get("isGroup", False),
+                    "from_me": from_me,
                 },
             )
         elif msg_type == "status":
-            status = data.get("status")
-            logger.info("WhatsApp status: {}", status)
-            if status == "connected":
-                self._connected = True
-            elif status == "disconnected":
-                self._connected = False
+            status = data.get("status", "")
+            if status.startswith("me:"):
+                self._me_jid = status[3:]
+                logger.info("WhatsApp Owner JID: {}", self._me_jid)
+            else:
+                logger.info("WhatsApp status: {}", status)
+                if status == "connected":
+                    self._connected = True
+                elif status == "disconnected":
+                    self._connected = False
         elif msg_type == "qr":
             logger.info("Scan QR code in the bridge terminal to connect WhatsApp")
         elif msg_type == "error":

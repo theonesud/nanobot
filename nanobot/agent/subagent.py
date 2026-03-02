@@ -100,6 +100,8 @@ class SubagentManager:
                     path_append=self.exec_config.path_append,
                     auditor=self._auditor,
                     bus=self.bus,
+                    use_docker=self.exec_config.use_docker,
+                    docker_image=self.exec_config.docker_image,
                 )
             )
             tools.register(WebSearchTool(api_key=self.brave_api_key))

@@ -86,11 +86,6 @@ class TestFindByModel:
         assert spec is not None
         assert spec.name == "zhipu"
 
-    def test_groq_keyword(self):
-        spec = find_by_model("groq-llama3")
-        assert spec is not None
-        assert spec.name == "groq"
-
 
 class TestFindByName:
     def test_finds_anthropic(self):

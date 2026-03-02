@@ -13,7 +13,7 @@ class Base(BaseModel):
 
 
 class WhatsAppConfig(Base):
-    enabled: bool = False
+    enabled: bool = True
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""
     allow_from: list[str] = Field(default_factory=list)
@@ -153,7 +153,7 @@ class QQConfig(Base):
 
 class ChannelsConfig(Base):
     send_progress: bool = True
-    send_tool_hints: bool = False
+    send_tool_hints: bool = True
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
@@ -194,7 +194,6 @@ class ProvidersConfig(Base):
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
-    groq: ProviderConfig = Field(default_factory=ProviderConfig)
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
     dashscope: ProviderConfig = Field(default_factory=ProviderConfig)
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -232,6 +231,8 @@ class WebToolsConfig(Base):
 class ExecToolConfig(Base):
     timeout: int = 60
     path_append: str = ""
+    docker_image: str | None = "python:3.12-slim"
+    use_docker: bool = True
 
 
 class MCPServerConfig(Base):
@@ -247,6 +248,7 @@ class ToolsConfig(Base):
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False
+    browser_data_dir: str | None = None
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 

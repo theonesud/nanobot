@@ -5,16 +5,21 @@ from nanobot.bus.events import ApprovalRequest, ApprovalResponse, InboundMessage
 
 class MessageBus:
     def __init__(self):
-        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
+        self.inbound: asyncio.PriorityQueue[tuple[int, int, InboundMessage]] = (
+            asyncio.PriorityQueue()
+        )
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self.approval_requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
         self.approval_responses: dict[str, asyncio.Queue[ApprovalResponse]] = {}
+        self._seq = 0
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
-        await self.inbound.put(msg)
+        self._seq += 1
+        await self.inbound.put((msg.priority, self._seq, msg))
 
     async def consume_inbound(self) -> InboundMessage:
-        return await self.inbound.get()
+        _, _, msg = await self.inbound.get()
+        return msg
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         await self.outbound.put(msg)

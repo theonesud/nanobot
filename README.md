@@ -89,72 +89,73 @@
   </tr>
 </table>
 
+## � Proactive Capabilities
+
+Nanobot is designed as a "stay-alive" autonomous agent that proactively manages your digital life, improves its own capabilities, and operates 24/7 without intervention.
+
+### 🧠 Autonomous Growth & Intelligence
+- **High-Speed Reasoning**: Powered by OpenCode for near-instant response times.
+- **Nightly Self-Evolution**: Updates its own system prompt and self-optimizes nightly (3 AM/4 AM) to create new skills and rules.
+- **Heartbeat Monitoring**: Periodically checks `HEARTBEAT.md` for tasks, allowing it to work while you sleep.
+- **Perpetual Memory**: Recalls relevant history and facts using a sophisticated memory store and "SOUL.md" personality file.
+
+### 🌍 Universal Connectivity
+- **Omni-Channel Support**: Native integration with Slack, WhatsApp, Telegram, Discord, Feishu, Email, and more.
+- **Proactive Messaging**: Initiates contact via scheduled tasks and cron jobs—it talks to you when it has something important to share.
+- **Real-Time Event Bus**: A universal webhook and prioritized message queue ensure no event is missed.
+- **MCP Integration**: Connects to any external tool, sensor, or service via the Model Context Protocol.
+
+### 🛠️ "God Mode" Coding & DevOps
+- **AST-Based Self-Editing**: Edits its own source code with precision using AST parsing to fix bugs or add features.
+- **Git-Integrated Rollbacks**: Automatically commits its own upgrades and provides a `/rollback` command for safety.
+- **Automated QA**: Runs its own test suite via `pytest` to verify self-generated code.
+- **Docker Sandboxing**: Executes all dangerous shell commands and subagents in isolated Docker containers.
+- **Instant Hot-Reload**: Applies code changes instantly without restarting the gateway.
+
+### 🔍 Research & Task Management
+- **Deep Web Research**: Uses persistent browser profiles and Playwright to conduct research across the authenticated web.
+- **Parallel Subagents**: Spawns multiple background "workers" to complete complex, multi-step tasks in parallel.
+- **Daily Git Summaries**: Reports highlights of the day's development activity every evening.
+- **Multimodal Vision**: Understands images and documents across all major chat channels.
+
+### 🛡️ Enterprise-Grade Safety
+- **Budget Guardrails**: Hard daily spend limits to prevent runaway API costs.
+- **Failsafe Kill-Switch**: Instant `/stop` command to terminate any active task or agent loop.
+- **Permissionless Operation**: Designed to operate with full (yet sandboxed) permissions for maximum autonomy.
+- **Rich Interactive CLI**: Persistent history and Markdown support for power users.
+
+
 ## 📦 Install
 
-**Install from source** (latest features, recommended for development)
+Nanobot requires the **OpenCode** CLI to be installed on your system for all AI reasoning.
 
+**1. Install OpenCode** (Prerequisite)
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+**2. Install Nanobot**
 ```bash
 git clone https://github.com/HKUDS/nanobot.git
 cd nanobot
-pip install -e .
-```
-
-**Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
-
-```bash
-uv tool install nanobot-ai
-```
-
-**Install from PyPI** (stable)
-
-```bash
-pip install nanobot-ai
+bash install.sh
 ```
 
 ## 🚀 Quick Start
 
-> [!TIP]
-> Set your API key in `~/.nanobot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+Nanobot works out of the box using **OpenCode** as its default provider. No API keys are required for the core AI functionality.
 
-**1. Initialize**
-
-The configuration is automatically created at `~/.nanobot/config.json` when you first run the agent.
-
-**2. Configure** (`~/.nanobot/config.json`)
-
-Add or merge these **two parts** into your config (other options have defaults).
-
-*Set your API key* (e.g. OpenRouter, recommended for global users):
-```json
-{
-  "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
-    }
-  }
-}
-```
-
-*Set your model* (optionally pin a provider — defaults to auto-detection):
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5",
-      "provider": "openrouter"
-    }
-  }
-}
-```
-
-**3. Chat**
-
+**1. Start Chatting**
 ```bash
-nanobot agent
+uv run nanobot agent
 ```
 
-That's it! You have a working AI assistant in 2 minutes.
+**2. Add Chat Channels (Optional)**
+If you want to access your agent via Telegram or WhatsApp:
+```bash
+uv run nanobot gateway
+```
+(See [Chat Apps](#-chat-apps) section below for channel-specific tokens).
 
 ## 💬 Chat Apps
 
@@ -201,7 +202,7 @@ Connect nanobot to your favorite chat platform.
 **3. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -224,7 +225,7 @@ nanobot will automatically register, configure `~/.nanobot/config.json`, and con
 **2. Restart gateway**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 That's it — nanobot handles the rest!
@@ -302,7 +303,7 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
 **6. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -313,7 +314,7 @@ nanobot gateway
 Install Matrix dependencies first:
 
 ```bash
-pip install nanobot-ai[matrix]
+uv pip install nanobot-ai[matrix]
 ```
 
 **1. Create/choose a Matrix account**
@@ -368,7 +369,7 @@ pip install nanobot-ai[matrix]
 **4. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -381,7 +382,7 @@ Requires **Node.js ≥18**.
 **1. Link device**
 
 ```bash
-nanobot channels login
+uv run nanobot channels login
 # Scan QR with WhatsApp → Settings → Linked Devices
 ```
 
@@ -402,10 +403,10 @@ nanobot channels login
 
 ```bash
 # Terminal 1
-nanobot channels login
+uv run nanobot channels login
 
 # Terminal 2
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -447,7 +448,7 @@ Uses **WebSocket** long connection — no public IP required.
 **3. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 > [!TIP]
@@ -491,7 +492,7 @@ Uses **botpy SDK** with WebSocket — no public IP required. Currently supports 
 **4. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 Now send a message to the bot from QQ — it should respond!
@@ -532,7 +533,7 @@ Uses **Stream Mode** — no public IP required.
 **3. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -571,7 +572,7 @@ Uses **Socket Mode** — no public URL required.
 **4. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 DM the bot directly or @mention it in a channel — it should respond!
@@ -624,7 +625,7 @@ Give nanobot its own email account. It polls **IMAP** for incoming mail and repl
 **3. Run**
 
 ```bash
-nanobot gateway
+uv run nanobot gateway
 ```
 
 </details>
@@ -646,20 +647,18 @@ Config file: `~/.nanobot/config.json`
 
 ### Providers
 
-> [!TIP]
-> - **Groq** provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **VolcEngine Coding Plan**: If you're on VolcEngine's coding plan, set `"apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3"` in your volcengine provider config.
 
 | Provider | Purpose | Get API Key |
 |----------|---------|-------------|
-| `custom` | Any OpenAI-compatible endpoint (direct, no LiteLLM) | — |
+| `opencode` | **Primary LLM** (local/private reasoning) | [opencode.ai](https://opencode.ai) |
+| `custom` | Any OpenAI-compatible endpoint | — |
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai) |
 | `anthropic` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
 | `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
 | `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
 | `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
@@ -669,8 +668,8 @@ Config file: `~/.nanobot/config.json`
 | `moonshot` | LLM (Moonshot/Kimi) | [platform.moonshot.cn](https://platform.moonshot.cn) |
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
-| `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex` |
-| `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
+| `openai_codex` | LLM (Codex, OAuth) | `uv run nanobot provider login openai-codex` |
+| `github_copilot` | LLM (GitHub Copilot, OAuth) | `uv run nanobot provider login github-copilot` |
 
 <details>
 <summary><b>OpenAI Codex (OAuth)</b></summary>
@@ -679,7 +678,7 @@ Codex uses OAuth instead of API keys. Requires a ChatGPT Plus or Pro account.
 
 **1. Login:**
 ```bash
-nanobot provider login openai-codex
+uv run nanobot provider login openai-codex
 ```
 
 **2. Set model** (merge into `~/.nanobot/config.json`):
@@ -695,7 +694,7 @@ nanobot provider login openai-codex
 
 **3. Chat:**
 ```bash
-nanobot agent -m "Hello!"
+uv run nanobot agent -m "Hello!"
 ```
 
 > Docker users: use `docker run -it` for interactive OAuth login.
@@ -880,15 +879,15 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 
 | Command | Description |
 |---------|-------------|
-| `nanobot agent -m "..."` | Chat with the agent |
-| `nanobot agent` | Interactive chat mode |
-| `nanobot agent --no-markdown` | Show plain-text replies |
-| `nanobot agent --logs` | Show runtime logs during chat |
-| `nanobot gateway` | Start the gateway |
-| `nanobot status` | Show status |
-| `nanobot provider login openai-codex` | OAuth login for providers |
-| `nanobot channels login` | Link WhatsApp (scan QR) |
-| `nanobot channels status` | Show channel status |
+| `uv run nanobot agent -m "..."` | Chat with the agent |
+| `uv run nanobot agent` | Interactive chat mode |
+| `uv run nanobot agent --no-markdown` | Show plain-text replies |
+| `uv run nanobot agent --logs` | Show runtime logs during chat |
+| `uv run nanobot gateway` | Start the gateway |
+| `uv run nanobot status` | Show status |
+| `uv run nanobot provider login openai-codex` | OAuth login for providers |
+| `uv run nanobot channels login` | Link WhatsApp (scan QR) |
+| `uv run nanobot channels status` | Show channel status |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
@@ -897,14 +896,14 @@ Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
 ```bash
 # Add a job
-nanobot cron add --name "daily" --message "Good morning!" --cron "0 9 * * *"
-nanobot cron add --name "hourly" --message "Check status" --every 3600
+uv run nanobot cron add --name "daily" --message "Good morning!" --cron "0 9 * * *"
+uv run nanobot cron add --name "hourly" --message "Check status" --every 3600
 
 # List jobs
-nanobot cron list
+uv run nanobot cron list
 
 # Remove a job
-nanobot cron remove <job_id>
+uv run nanobot cron remove <job_id>
 ```
 
 </details>
@@ -925,7 +924,7 @@ The gateway wakes up every 30 minutes and checks `HEARTBEAT.md` in your workspac
 
 The agent can also manage this file itself — ask it to "add a periodic task" and it will update `HEARTBEAT.md` for you.
 
-> **Note:** The gateway must be running (`nanobot gateway`) and you must have chatted with the bot at least once so it knows which channel to deliver to.
+> **Note:** The gateway must be running (`uv run nanobot gateway`) and you must have chatted with the bot at least once so it knows which channel to deliver to.
 
 </details>
 
@@ -937,7 +936,7 @@ The agent can also manage this file itself — ask it to "add a periodic task" a
 ### Docker Compose
 
 ```bash
-vim ~/.nanobot/config.json                     # add API keys
+# gateway will start using opencode automatically
 docker compose up -d nanobot-gateway           # start gateway
 ```
 
@@ -956,8 +955,8 @@ docker build -t nanobot .
 # Initialize config (first time only)
 docker run -v ~/.nanobot:/root/.nanobot --rm nanobot agent -m "hi"
 
-# Edit config on host to add API keys
-vim ~/.nanobot/config.json
+# Optional: edit config to enable chat channels (Telegram/WhatsApp)
+# vim ~/.nanobot/config.json
 
 # Run gateway (connects to enabled channels, e.g. Telegram/Discord/Mochat)
 docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot gateway
@@ -1048,11 +1047,11 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
-- [ ] **Multi-modal** — See and hear (images, voice, video)
-- [ ] **Long-term memory** — Never forget important context
-- [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Calendar and more
-- [ ] **Self-improvement** — Learn from feedback and mistakes
+- [x] **Multi-modal** — Vision support (images, documents)
+- [x] **Long-term memory** — Persistent context and recall
+- [x] **Self-improvement** — Autonomous skills and optimization
+- [ ] **Better reasoning** — Advanced multi-step planning
+- [ ] **More integrations** — Calendar, Finance, etc.
 
 ### Contributors
 

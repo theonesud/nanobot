@@ -22,9 +22,13 @@ class ExecTool(Tool):
         path_append: str = "",
         bus: Any | None = None,
         auditor: Any | None = None,
+        use_docker: bool = False,
+        docker_image: str | None = None,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
+        self.use_docker = use_docker
+        self.docker_image = docker_image
         self.deny_patterns = deny_patterns or [
             "rm\\s+-[rf]{1,2}",
             "del\\s+/[fq]",
@@ -110,6 +114,12 @@ class ExecTool(Tool):
 
     async def _execute_safe(self, command: str, working_dir: str | None) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
+        if self.use_docker and self.docker_image:
+            import shlex
+
+            cmd_q = shlex.quote(command)
+            cwd_q = shlex.quote(cwd)
+            command = f"docker run --rm -v {cwd_q}:/workspace -w /workspace {self.docker_image} /bin/sh -c {cmd_q}"
         env = os.environ.copy()
         if self.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append

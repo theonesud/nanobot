@@ -22,7 +22,7 @@ class ChannelManager:
 
     def _init_channels(self) -> None:
         for name, cls_name, kwargs in [
-            ("telegram", "TelegramChannel", {"groq_api_key": self.config.providers.groq.api_key}),
+            ("telegram", "TelegramChannel", {}),
             ("whatsapp", "WhatsAppChannel", {}),
             ("discord", "DiscordChannel", {}),
             ("feishu", "FeishuChannel", {}),

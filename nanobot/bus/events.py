@@ -12,6 +12,7 @@ class InboundMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    priority: int = 50
     session_key_override: str | None = None
 
     @property

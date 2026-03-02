@@ -3,9 +3,15 @@ x-common-config: &common-config
     context: .
     dockerfile: Dockerfile
   volumes:
-    - /opt/nanobot/config:/root/.nanobot
-    - /opt/nanobot/opencode:/root/.opencode
+    # Map host config to container config
+    - ${HOME}/.nanobot:/root/.nanobot
+    - ${HOME}/.opencode:/root/.opencode
+    # PATH IDENTITY: Mount the repo at the exact same absolute path
+    # and set it as the working directory. This ensures sibling containers
+    # (Docker-out-of-Docker) can resolve paths correctly.
+    - ${PWD}:${PWD}
     - /var/run/docker.sock:/var/run/docker.sock
+  working_dir: ${PWD}
 
 services:
   nanobot-gateway:
@@ -13,19 +19,12 @@ services:
     <<: *common-config
     entrypoint: ["sh", "-c"]
     command: ["cd /app/bridge && npm start & nanobot gateway"]
-    restart: unless-stopped
     ports:
       - 18790:18790
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.25'
-          memory: 256M
-  
+    restart: unless-stopped
+
   nanobot-cli:
+    container_name: nanobot-cli
     <<: *common-config
     profiles:
       - cli

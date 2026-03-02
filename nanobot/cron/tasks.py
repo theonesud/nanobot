@@ -61,8 +61,35 @@ async def nightly_soul_update(agent: AgentLoop):
             channel="system",
             chat_id="soul_update",
         )
-        if updated_soul and "---" not in updated_soul:
+        if updated_soul and ("---" in updated_soul or "# " in updated_soul):
             soul_file.write_text(updated_soul, encoding="utf-8")
+            from nanobot.agent.tools.filesystem import _git_commit
+
+            _git_commit(soul_file, "nanobot: nightly soul update")
             logger.info("✓ SOUL.md updated with daily insights")
     except Exception:
         logger.exception("Failed to update SOUL.md")
+
+
+async def nightly_self_optimization(agent: AgentLoop):
+    logger.info("Heartbeat: starting nightly self-optimization session")
+    history_file = agent.workspace / "memory" / "HISTORY.md"
+    if not history_file.exists():
+        return
+    try:
+        logs = history_file.read_text(encoding="utf-8").splitlines()[-1000:]
+        planning_prompt = (
+            "Review your recent activity logs and current codebase. Identify one specific way you can improve yourself today. "
+            "This could be: (1) Creating a new skill/tool for a recurring task, (2) Refactoring a clunky piece of your own code, "
+            "(3) Updating a policy/rule in MEMORY.md. Plan and then EXECUTE the improvement using your tools. "
+            "If no improvement is needed, say 'All systems optimal'.\n\nLogs:\n" + "\n".join(logs)
+        )
+        await agent.process_direct(
+            planning_prompt,
+            session_key="background:optimization",
+            channel="system",
+            chat_id="self_opt",
+        )
+        logger.info("✓ Nightly self-optimization completed")
+    except Exception:
+        logger.exception("Failed nightly self-optimization")

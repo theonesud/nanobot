@@ -1,10 +1,28 @@
 import difflib
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+
+
+def _git_commit(path: Path, message: str) -> None:
+    try:
+        root = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=str(path.parent),
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+        subprocess.run(["git", "add", str(path)], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", message], cwd=root, check=True, capture_output=True)
+    except Exception:
+        pass
 
 
 def _resolve_path(
@@ -101,6 +119,7 @@ class WriteFileTool(Tool):
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             _atomic_write(file_path, content)
+            _git_commit(file_path, f"nanobot: write {file_path.name}")
             return f"Successfully wrote {len(content)} bytes to {file_path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -146,6 +165,7 @@ class EditFileTool(Tool):
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
             new_content = content.replace(old_text, new_text, 1)
             _atomic_write(file_path, new_content)
+            _git_commit(file_path, f"nanobot: edit {file_path.name}")
             return f"Successfully edited {file_path}"
         except PermissionError as e:
             return f"Error: {e}"

@@ -39,7 +39,7 @@ from nanobot.channels.manager import ChannelManager
 from nanobot.config.loader import get_config_path, get_data_dir, load_config
 from nanobot.config.schema import Config
 from nanobot.cron.service import CronService
-from nanobot.cron.tasks import nightly_soul_update, summarize_git_diffs
+from nanobot.cron.tasks import nightly_self_optimization, nightly_soul_update, summarize_git_diffs
 from nanobot.cron.types import CronJob, CronSchedule
 from nanobot.heartbeat.service import HeartbeatService
 from nanobot.providers.custom_provider import CustomProvider
@@ -144,7 +144,7 @@ def _make_provider(
     p = (
         config.get_provider(model)
         if not override_provider_name
-        else config.providers.get(override_provider_name)
+        else getattr(config.providers, override_provider_name, None)
     )
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)
@@ -155,7 +155,7 @@ def _make_provider(
             default_model=model,
         )
     if provider_name == "opencode":
-        return OpenCodeProvider(bin_path="/Users/sud/.opencode/bin/opencode", default_model=model)
+        return OpenCodeProvider(bin_path="opencode", default_model=model)
     spec = find_by_name(provider_name)
     if (
         not model.startswith("bedrock/")
@@ -287,6 +287,7 @@ def gateway(
         exec_config=config.tools.exec,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
+        browser_data_dir=config.tools.browser_data_dir,
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
@@ -327,7 +328,14 @@ def gateway(
         id="soul_update",
         replace_existing=True,
     )
-    console.print("[green]✓[/green] Proactive: Nightly SOUL update at 3 AM")
+    scheduler.add_job(
+        nightly_self_optimization,
+        trigger=CronTrigger(hour=4, minute=0),
+        args=[agent],
+        id="self_optimization",
+        replace_existing=True,
+    )
+    console.print("[green]✓[/green] Proactive: Nightly self-optimization at 4 AM")
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -489,6 +497,7 @@ def agent(
         exec_config=config.tools.exec,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
+        browser_data_dir=config.tools.browser_data_dir,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         auditor=auditor,

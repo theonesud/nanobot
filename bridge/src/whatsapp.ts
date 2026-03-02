@@ -99,6 +99,9 @@ export class WhatsAppClient {
       } else if (connection === 'open') {
         console.log('✅ Connected to WhatsApp');
         this.options.onStatus('connected');
+        if (this.sock.user) {
+          this.options.onStatus(`me:${this.sock.user.id}`);
+        }
       }
     });
 
@@ -110,9 +113,6 @@ export class WhatsAppClient {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
-        // Skip own messages
-        if (msg.key.fromMe) continue;
-
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
@@ -128,7 +128,8 @@ export class WhatsAppClient {
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
-        });
+          fromMe: msg.key.fromMe || false,
+        } as any);
       }
     });
   }
