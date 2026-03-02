@@ -31,7 +31,6 @@ does this codebase proactively do all of the below things?
 - 🟢 all ai communication goes through opencode's default model
 
 - 🟢 browses the web (using user profiles via browser_data_dir + Playwright MCP) and does deep web research
-- 🟢 transcribes voice messages (Whisper)
 - 🟢 supports multimodal inputs (Vision)
 
 - 🟢 has its own task board (manage_tasks tool) in which i can add tasks and go to sleep to find it has done everything in the morning

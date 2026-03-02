@@ -1,140 +1,44 @@
-from __future__ import annotations
-
 import asyncio
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+import re
+from datetime import datetime
 
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider
-
-if TYPE_CHECKING:
-    pass
-_HEARTBEAT_TOOL = [
-    {
-        "type": "function",
-        "function": {
-            "name": "heartbeat",
-            "description": "Report heartbeat decision after reviewing tasks.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["skip", "run"],
-                        "description": "skip = nothing to do, run = has active tasks",
-                    },
-                    "tasks": {
-                        "type": "string",
-                        "description": "Natural-language summary of active tasks (required for run)",
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-    }
-]
-
 
 class HeartbeatService:
-    def __init__(
-        self,
-        workspace: Path,
-        provider: LLMProvider,
-        model: str,
-        on_execute: Callable[[str], Coroutine[Any, Any, str]] | None = None,
-        on_notify: Callable[[str], Coroutine[Any, Any, None]] | None = None,
-        interval_s: int = 30 * 60,
-        enabled: bool = True,
-    ):
-        self.workspace = workspace
-        self.provider = provider
-        self.model = model
-        self.on_execute = on_execute
-        self.on_notify = on_notify
-        self.interval_s = interval_s
-        self.enabled = enabled
+    def __init__(self, workspace, provider, model, on_execute, on_notify, interval=1800):
+        self.workspace, self.provider, self.model = workspace, provider, model
+        self.on_execute, self.on_notify, self.interval = on_execute, on_notify, interval
         self._running = False
-        self._task: asyncio.Task | None = None
 
-    @property
-    def heartbeat_file(self) -> Path:
-        return self.workspace / "HEARTBEAT.md"
-
-    def _read_heartbeat_file(self) -> str | None:
-        if self.heartbeat_file.exists():
-            try:
-                return self.heartbeat_file.read_text(encoding="utf-8")
-            except Exception:
-                return None
-        return None
-
-    async def _decide(self, content: str) -> tuple[str, str]:
-        response = await self.provider.chat(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Check HEARTBEAT.md for active tasks. Call heartbeat tool.",
-                },
-                {
-                    "role": "user",
-                    "content": f"HEARTBEAT.md content:\n\n{content}",
-                },
-            ],
-            tools=_HEARTBEAT_TOOL,
-            model=self.model,
-        )
-
-
-        if not response.has_tool_calls:
-            return ("skip", "")
-        args = response.tool_calls[0].arguments
-        return (args.get("action", "skip"), args.get("tasks", ""))
-
-    async def start(self) -> None:
-        if not self.enabled:
-            logger.info("Heartbeat disabled")
-            return
-        if self._running:
-            logger.warning("Heartbeat already running")
-            return
+    async def start(self):
         self._running = True
-        self._task = asyncio.create_task(self._run_loop())
-        logger.info("Heartbeat started (every {}s)", self.interval_s)
-
-    def stop(self) -> None:
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            self._task = None
-
-    async def _run_loop(self) -> None:
         while self._running:
-            try:
-                await asyncio.sleep(self.interval_s)
-                if self._running:
-                    await self._tick()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Heartbeat error: {}", e)
+            p = self.workspace / "HEARTBEAT.md"
+            if p.exists():
+                txt = p.read_text()
+                # Find pending tasks: e.g. "- [ ] Task" or "- Task" (if not done)
+                tasks = [m.group(1) for m in re.finditer(r"^- \[ \] (.*)", txt, re.M)]
+                for t in tasks:
+                    logger.info(f"❤️ Autonomous check: {t}")
+                    # Decision logic: asking LLM if we should act NOW
+                    prompt = f"System Heartbeat Audit.\nTask: {t}\nRecent Activity: See MEMORY.md\n\nRespond with ACTION: <thinking> or PASS: <reason>."
+                    r = await self.provider.chat(
+                        [
+                            {"role": "system", "content": "Heartbeat logic."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        model=self.model,
+                    )
+                    if "ACTION" in r.content.upper():
+                        # Execute and MARK AS DONE
+                        await self.on_execute(t)
+                        new_txt = txt.replace(
+                            f"- [ ] {t}", f"- [x] {t} (Handled {datetime.now().date()})"
+                        )
+                        p.write_text(new_txt)
+                        txt = new_txt
+            await asyncio.sleep(self.interval)
 
-    async def _tick(self) -> None:
-        content = self._read_heartbeat_file()
-        if not content:
-            logger.debug("Heartbeat: HEARTBEAT.md missing or empty")
-            return
-        logger.info("Heartbeat: checking for tasks...")
-        try:
-            action, tasks = await self._decide(content)
-            if action != "run":
-                logger.info("Heartbeat: OK (nothing to report)")
-                return
-            logger.info("Heartbeat: tasks found, executing...")
-            if self.on_execute:
-                response = await self.on_execute(tasks)
-                if response and self.on_notify:
-                    logger.info("Heartbeat: completed, delivering response")
-                    await self.on_notify(response)
-        except Exception:
-            logger.exception("Heartbeat execution failed")
+    def stop(self):
+        self._running = False

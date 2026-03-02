@@ -1,66 +1,69 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.auditor import CommandAuditor
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.loop import AgentLoop, SkillsLoader
+from nanobot.agent.tools import ToolRegistry, register_builtin_tools
+from nanobot.bus.events import InboundMessage, OutboundMessage
 
 
-class TestAuditor:
-    @pytest.fixture
-    def auditor(self):
-        provider = MagicMock()
-        return CommandAuditor(provider=provider, model="opencode")
-
-    def test_auditor_initialization(self, auditor):
-        assert auditor.model == "opencode"
-
-    @pytest.mark.asyncio
-    async def test_audit_request(self, auditor):
-        assert hasattr(auditor, "evaluate")
+@pytest.fixture
+def ws(tmp_path):
+    return tmp_path
 
 
-class TestContext:
-    @pytest.fixture
-    def context(self, temp_workspace):
-        return ContextBuilder(workspace=temp_workspace)
-
-    def test_context_initialization(self, context, temp_workspace):
-        assert context.workspace == temp_workspace
-
-    def test_context_build_messages(self, context):
-        msgs = context.build_messages([], "Hello", channel="cli", chat_id="direct")
-        assert len(msgs) >= 2
-        assert any((m["role"] == "user" and "Hello" in str(m["content"]) for m in msgs))
+@pytest.fixture
+def bus():
+    b = MagicMock()
+    b.publish_outbound = AsyncMock()
+    b.consume_inbound = AsyncMock()
+    return b
 
 
-class TestToolRegistry:
-    def test_registry_creation(self):
-        registry = ToolRegistry()
-        assert registry is not None
-        assert len(registry.tool_names) == 0
+@pytest.fixture
+def provider():
+    p = MagicMock()
+    p.get_default_model.return_value = "test-model"
+    p.chat = AsyncMock(return_value=MagicMock(content="Hello!", has_tool_calls=False, usage={}))
+    return p
 
-    def test_registry_register(self):
-        registry = ToolRegistry()
 
-        def test_tool():
-            pass
+def test_tool_registry(ws):
+    reg = ToolRegistry(ws)
 
-        test_tool.name = "test_tool"
-        test_tool.description = "A test tool"
-        registry.register(test_tool)
-        tools = registry.tool_names
-        assert "test_tool" in tools
+    async def t_fn(x, **k):
+        return f"res:{x}"
 
-    def test_registry_get(self):
-        registry = ToolRegistry()
+    reg.add("test_tool", "desc", {"type": "object", "properties": {"x": {"type": "string"}}}, t_fn)
+    assert "test_tool" in reg.tools
+    assert len(reg.get_definitions()) == 1
 
-        def test_tool():
-            pass
 
-        test_tool.name = "get_test"
-        test_tool.description = "A test tool"
-        registry.register(test_tool)
-        tool = registry.get("get_test")
-        assert tool is not None
+@pytest.mark.asyncio
+async def test_agent_loop_basic(bus, provider, ws):
+    loop = AgentLoop(bus, provider, ws)
+    msg = InboundMessage("cli", "u1", "c1", "Hello")
+    res = await loop._process(msg)
+    assert isinstance(res, OutboundMessage)
+    assert "Hello!" in res.content
+    provider.chat.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_skills_loader(ws):
+    s_dir = ws / "skills" / "test_skill"
+    s_dir.mkdir(parents=True)
+    (s_dir / "SKILL.md").write_text("Skill content")
+    loader = SkillsLoader(ws)
+    skills = loader.list_skills()
+    assert any(s["name"] == "test_skill" for s in skills)
+    assert loader.load_skill("test_skill") == "Skill content"
+
+
+@pytest.mark.asyncio
+async def test_builtin_tools_registration(ws):
+    reg = ToolRegistry(ws)
+    register_builtin_tools(reg, ws)
+    assert "read_file" in reg.tools
+    assert "write_file" in reg.tools
+    assert "exec" in reg.tools

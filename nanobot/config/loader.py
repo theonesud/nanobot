@@ -33,8 +33,9 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = config.model_dump(by_alias=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    from nanobot.utils.files import atomic_write
+
+    atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def _migrate_config(data: dict) -> dict:

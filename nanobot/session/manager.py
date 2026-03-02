@@ -1,7 +1,6 @@
 import asyncio
 import collections
 import json
-import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.utils.files import atomic_write
 from nanobot.utils.helpers import ensure_dir, safe_filename
 from nanobot.utils.lock import FileLock
 
@@ -137,7 +137,12 @@ class SessionManager:
                 metadata=metadata,
                 last_consolidated=last_consolidated,
             )
-            logger.info("💾 Loaded session {} ({} messages, last_consolidated: {})", key, len(messages), last_consolidated)
+            logger.info(
+                "💾 Loaded session {} ({} messages, last_consolidated: {})",
+                key,
+                len(messages),
+                last_consolidated,
+            )
             return session
         except Exception as e:
             logger.warning("❌ Failed to load session {}: {}", key, e)
@@ -148,25 +153,21 @@ class SessionManager:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = path.with_suffix(".lock")
         async with FileLock(lock_path):
-            temp_path = path.with_suffix(".tmp")
             try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    meta = {
-                        "_type": "metadata",
-                        "key": session.key,
-                        "created_at": session.created_at.isoformat(),
-                        "updated_at": session.updated_at.isoformat(),
-                        "metadata": session.metadata,
-                        "last_consolidated": session.last_consolidated,
-                    }
-                    f.write(json.dumps(meta, ensure_ascii=False) + "\n")
-                    for m in session.messages:
-                        f.write(json.dumps(m, ensure_ascii=False) + "\n")
-                os.replace(temp_path, path)
+                meta = {
+                    "_type": "metadata",
+                    "key": session.key,
+                    "created_at": session.created_at.isoformat(),
+                    "updated_at": session.updated_at.isoformat(),
+                    "metadata": session.metadata,
+                    "last_consolidated": session.last_consolidated,
+                }
+                content = json.dumps(meta, ensure_ascii=False) + "\n"
+                for m in session.messages:
+                    content += json.dumps(m, ensure_ascii=False) + "\n"
+                atomic_write(path, content)
                 logger.info("💾 Saved session {} ({} messages)", session.key, len(session.messages))
             except Exception:
-                if temp_path.exists():
-                    temp_path.unlink()
                 raise
         self._cache[session.key] = session
         self._cache.move_to_end(session.key)
@@ -183,25 +184,18 @@ class SessionManager:
             pass
         path = self._get_session_path(session.key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(".tmp")
-        try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                meta = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata": session.metadata,
-                    "last_consolidated": session.last_consolidated,
-                }
-                f.write(json.dumps(meta, ensure_ascii=False) + "\n")
-                for m in session.messages:
-                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            os.replace(temp_path, path)
-        except Exception:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
+        meta = {
+            "_type": "metadata",
+            "key": session.key,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "metadata": session.metadata,
+            "last_consolidated": session.last_consolidated,
+        }
+        content = json.dumps(meta, ensure_ascii=False) + "\n"
+        for m in session.messages:
+            content += json.dumps(m, ensure_ascii=False) + "\n"
+        atomic_write(path, content)
 
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)

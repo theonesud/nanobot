@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import subprocess
 from collections import deque
@@ -9,10 +10,26 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import OutboundMessage
 
 
-async def summarize_git_diffs(agent: AgentLoop, channel: str = "slack", chat_id: str = "general"):
-    logger.info("Heartbeat: starting git diff summary task")
+async def _commit(path, msg, ws):
     try:
-        proc = await asyncio.create_subprocess_exec(
+        e = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "nanobot",
+            "GIT_AUTHOR_EMAIL": "nanobot@ai",
+            "GIT_COMMITTER_NAME": "nanobot",
+            "GIT_COMMITTER_EMAIL": "nanobot@ai",
+        }
+        subprocess.run(["git", "add", str(path)], cwd=str(ws), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", msg], cwd=str(ws), env=e, check=True, capture_output=True
+        )
+    except Exception:
+        pass
+
+
+async def summarize_git_diffs(agent: AgentLoop, channel: str = "cli", chat_id: str = "direct"):
+    try:
+        p = await asyncio.create_subprocess_exec(
             "git",
             "log",
             "--since='24 hours ago'",
@@ -22,90 +39,59 @@ async def summarize_git_diffs(agent: AgentLoop, channel: str = "slack", chat_id:
             stderr=subprocess.PIPE,
             cwd=str(agent.workspace),
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.error("Git diff failed: {}", stderr.decode())
+        o, e = await p.communicate()
+        if p.returncode != 0 or not o.strip():
             return
-        if not stdout.decode().strip():
-            logger.info("No git diffs found for the last 24 hours.")
-            return
-        response = await agent.process_direct(
-            f"Review the following git diffs from the last 24 hours and provide a concise summary of the changes, grouped by project or theme. Highlight any critical updates or potential issues.\n\n```diff\n{stdout.decode()[:50000]}\n```",
-            session_key="background:git_summary",
+        res = await agent.process_direct(
+            f"Summarize these git diffs:\n\n```diff\n{o.decode()[:40000]}\n```",
+            session_key="bg:git",
             channel=channel,
             chat_id=chat_id,
         )
-        if response:
+        if res:
             await agent.bus.publish_outbound(
-                OutboundMessage(
-                    channel=channel,
-                    chat_id=chat_id,
-                    content=f"📊 **Daily Git Activity Summary**\n\n{response}",
-                )
+                OutboundMessage(channel, chat_id, f"📊 **Git Summary**\n\n{res}")
             )
     except Exception:
-        logger.exception("Failed to summarize git diffs")
+        logger.exception("Git summary failed")
 
 
 async def nightly_soul_update(agent: AgentLoop):
-    logger.info("Heartbeat: starting nightly soul update task")
-    history_file = agent.workspace / "memory" / "HISTORY.md"
-    soul_file = agent.workspace / "SOUL.md"
-    if not history_file.exists():
-        logger.warning("HISTORY.md not found, skipping soul update")
+    h_f, s_f = agent.workspace / "memory/HISTORY.md", agent.workspace / "SOUL.md"
+    if not h_f.exists():
         return
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            all_logs = list(deque(f, maxlen=500))
-        updated_soul = await agent.process_direct(
-            f"Review the following daily activity logs and your current core persona (SOUL.md). Identify any new preferences, recurring topics, or important decisions made by the user today. Provide an UPDATED version of SOUL.md that incorporates these new insights while preserving its core structure and existing knowledge. ONLY respond with the markdown content of the updated SOUL.md.\n\n## Current SOUL.md\n{(soul_file.read_text(encoding='utf-8') if soul_file.exists() else '')}\n\n## Daily Logs\n{''.join(all_logs)}",
-            session_key="background:soul_update",
+        with open(h_f, "r") as f:
+            logs = list(deque(f, maxlen=500))
+        res = await agent.process_direct(
+            f"Update SOUL.md based on logs. Return ONLY content.\n\nSoul:\n{s_f.read_text() if s_f.exists() else ''}\n\nLogs:\n{''.join(logs)}",
+            session_key="bg:soul",
             channel="system",
-            chat_id="soul_update",
+            chat_id="soul",
         )
-        if updated_soul and ("---" in updated_soul or "# " in updated_soul):
-            content = updated_soul.strip()
-            if content.startswith("```"):
-                content = re.sub(r"^```[a-zA-Z]*\n", "", content)
-                content = re.sub(r"\n```$", "", content)
-            soul_file.write_text(content.strip(), encoding="utf-8")
-            from nanobot.agent.tools.filesystem import _git_commit
-
-            _git_commit(soul_file, "nanobot: nightly soul update")
-            logger.info("✓ SOUL.md updated with daily insights")
+        if res:
+            c = res.strip()
+            if c.startswith("```"):
+                c = re.sub(r"^```[a-zA-Z]*\n", "", c)
+                c = re.sub(r"\n```$", "", c)
+            s_f.write_text(c)
+            await _commit(s_f, "nanobot: nightly soul update", agent.workspace)
     except Exception:
-        logger.exception("Failed to update SOUL.md")
+        logger.exception("Soul update failed")
 
 
 async def nightly_self_optimization(agent: AgentLoop):
-    logger.info("Heartbeat: starting nightly self-optimization session")
-    history_file = agent.workspace / "memory" / "HISTORY.md"
-    if not history_file.exists():
+    h_f = agent.workspace / "memory/HISTORY.md"
+    if not h_f.exists():
         return
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            logs = [line.strip() for line in deque(f, maxlen=1000)]
-        log_file = agent.workspace / "logs" / "nanobot.log"
-        log_content = ""
-        if log_file.exists():
-            with open(log_file, "r", encoding="utf-8") as f:
-                log_lines = list(deque(f, maxlen=500))
-            log_content = "\n\n--- [INTERNAL RUNTIME LOGS] ---\n" + "".join(log_lines)
-
-        planning_prompt = (
-            "Review your recent activity logs and current codebase. Identify one specific way you can improve yourself today. "
-            "Use the provided internal runtime logs to look for hidden errors or performance bottlenecks. "
-            "This could be: (1) Creating a new skill/tool for a recurring task, (2) Refactoring a clunky piece of your own code, "
-            "(3) Updating a policy/rule in MEMORY.md. Plan and then EXECUTE the improvement using your tools. "
-            "If no improvement is needed, say 'All systems optimal'.\n\nLogs:\n" + "\n".join(logs) + log_content
-        )
-
+        with open(h_f, "r") as f:
+            logs = "".join(deque(f, maxlen=1000))
         await agent.process_direct(
-            planning_prompt,
-            session_key="background:optimization",
+            f"Optimize yourself based on these logs. Create tools/rules as needed.\n\nLogs:\n{logs}",
+            session_key="bg:opt",
             channel="system",
-            chat_id="self_opt",
+            chat_id="opt",
         )
-        logger.info("✓ Nightly self-optimization completed")
     except Exception:
-        logger.exception("Failed nightly self-optimization")
+        logger.exception("Self-opt failed")
