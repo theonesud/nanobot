@@ -53,11 +53,6 @@ class Session:
             out.append(entry)
         return out
 
-    def clear(self) -> None:
-        self.messages = []
-        self.last_consolidated = 0
-        self.updated_at = datetime.now()
-
 
 class SessionManager:
     def __init__(self, workspace: Path, max_cache_size: int = 100):
@@ -196,28 +191,3 @@ class SessionManager:
         for m in session.messages:
             content += json.dumps(m, ensure_ascii=False) + "\n"
         atomic_write(path, content)
-
-    def invalidate(self, key: str) -> None:
-        self._cache.pop(key, None)
-
-    def list_sessions(self) -> list[dict[str, Any]]:
-        sessions = []
-        for path in self.sessions_dir.glob("*.jsonl"):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    first_line = f.readline().strip()
-                    if first_line:
-                        data = json.loads(first_line)
-                        if data.get("_type") == "metadata":
-                            key = data.get("key") or path.stem.replace("_", ":", 1)
-                            sessions.append(
-                                {
-                                    "key": key,
-                                    "created_at": data.get("created_at"),
-                                    "updated_at": data.get("updated_at"),
-                                    "path": str(path),
-                                }
-                            )
-            except Exception:
-                continue
-        return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)

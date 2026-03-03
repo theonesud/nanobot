@@ -93,6 +93,7 @@ def gateway():
             config.agents.defaults.model,
             on_execute=lambda t: loop.process_direct(t, "heartbeat"),
             on_notify=lambda r: bus.publish_outbound(OutboundMessage("cli", "direct", r)),
+            db=loop.db,
         )
 
         async def on_job(j):
@@ -110,7 +111,6 @@ def gateway():
                     await bus.publish_outbound(OutboundMessage(chan, to, res))
 
         cron.on_job = on_job
-        asyncio.create_task(_handle_approvals(bus))
         for name, sched in {
             "nightly_soul_update": "0 2 * * *",
             "nightly_self_optimization": "0 3 * * *",

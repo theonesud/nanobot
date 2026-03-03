@@ -4,7 +4,8 @@ from nanobot.bus.events import ApprovalRequest, ApprovalResponse, InboundMessage
 
 
 class MessageBus:
-    def __init__(self):
+    def __init__(self, db=None):
+        self.db = db
         self.inbound: asyncio.PriorityQueue[tuple[int, int, InboundMessage]] = (
             asyncio.PriorityQueue()
         )
@@ -15,6 +16,8 @@ class MessageBus:
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         self._seq += 1
+        if self.db:
+            self.db.log_trace(msg.session_key, "inbound", msg.__dict__)
         await self.inbound.put((msg.priority, self._seq, msg))
 
     async def consume_inbound(self) -> InboundMessage:
@@ -22,12 +25,16 @@ class MessageBus:
         return msg
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
+        if self.db:
+            self.db.log_trace(f"{msg.channel}:{msg.chat_id}", "outbound", msg.__dict__)
         await self.outbound.put(msg)
 
     async def consume_outbound(self) -> OutboundMessage:
         return await self.outbound.get()
 
     async def publish_approval_request(self, req: ApprovalRequest) -> None:
+        if self.db:
+            self.db.log_trace(f"{req.channel}:{req.chat_id}", "approval_request", req.__dict__)
         if req.id not in self.approval_responses:
             self.approval_responses[req.id] = asyncio.Queue()
             asyncio.get_event_loop().call_later(
@@ -39,6 +46,8 @@ class MessageBus:
         return await self.approval_requests.get()
 
     async def publish_approval_response(self, resp: ApprovalResponse) -> None:
+        if self.db:
+            self.db.log_trace(resp.id, "approval_response", resp.__dict__)
         if resp.id in self.approval_responses:
             await self.approval_responses[resp.id].put(resp)
 

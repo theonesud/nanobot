@@ -320,30 +320,45 @@ def register_builtin_tools(reg, ws: Path):
         p = _resolve(path, ws)
         s = p.read_text()
         tree = ast.parse(s)
+
+        def find_node(nodes, parts):
+            if not parts:
+                return None
+            for n in nodes:
+                if getattr(n, "name", None) == parts[0]:
+                    if len(parts) == 1:
+                        return n
+                    if isinstance(n, ast.ClassDef):
+                        return find_node(
+                            [
+                                sub
+                                for sub in n.body
+                                if isinstance(
+                                    sub, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                                )
+                            ],
+                            parts[1:],
+                        )
+            return None
+
+        target = find_node(
+            [
+                n
+                for n in tree.body
+                if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            ],
+            symbol.split("."),
+        )
+        if not target:
+            return f"Error: {symbol} not found in {path}"
+
         lines = s.splitlines(keepends=True)
-        nodes = [
-            n
-            for n in tree.body
-            if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        target = None
-        for i, part in enumerate(symbol.split(".")):
-            m = next((n for n in nodes if getattr(n, "name", None) == part), None)
-            if not m:
-                return "Error: Not found"
-            if i == len(symbol.split(".")) - 1:
-                target = m
-            elif isinstance(m, ast.ClassDef):
-                nodes = [
-                    n
-                    for n in m.body
-                    if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-                ]
-        pat = re.compile(r"^", re.M)
         indent = re.match(r"^\s*", lines[target.lineno - 1]).group(0)
-        code = pat.sub(indent, textwrap.dedent(new_code).strip()) + "\n"
+        code = re.compile(r"^", re.M).sub(indent, textwrap.dedent(new_code).strip()) + "\n"
         lines[target.lineno - 1 : target.end_lineno] = [code]
         _write(p, "".join(lines))
+        if k.get("loop") and hasattr(k["loop"], "skills"):
+            k["loop"].skills.clear_cache()
         return f"Rewrote {symbol}"
 
     reg.add(

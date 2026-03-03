@@ -21,9 +21,25 @@ class Database:
                 "\n                CREATE TABLE IF NOT EXISTS task_costs (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id TEXT,\n                    provider TEXT,\n                    model TEXT,\n                    tokens_prompt INTEGER,\n                    tokens_completion INTEGER,\n                    cost_usd REAL,\n                    timestamp INTEGER\n                )\n            "
             )
             conn.execute(
+                "\n                CREATE TABLE IF NOT EXISTS traces (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id TEXT,\n                    event_type TEXT,\n                    data TEXT,\n                    timestamp INTEGER\n                )\n            "
+            )
+            conn.execute(
                 "\n                CREATE TABLE IF NOT EXISTS active_crons (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    schedule_expression TEXT,\n                    opencode_prompt TEXT,\n                    slack_channel_id TEXT,\n                    enabled BOOLEAN DEFAULT 1\n                )\n            "
             )
             conn.commit()
+
+    def log_trace(self, session_id: str, event_type: str, data: dict) -> None:
+        try:
+            import json
+
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO traces (session_id, event_type, data, timestamp) VALUES (?, ?, ?, ?)",
+                    (session_id, event_type, json.dumps(data), int(time.time())),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to log trace: {}", e)
 
     def log_cost(
         self,

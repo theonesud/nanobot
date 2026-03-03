@@ -24,7 +24,9 @@ def bus():
 def provider():
     p = MagicMock()
     p.get_default_model.return_value = "test-model"
-    p.chat = AsyncMock(return_value=MagicMock(content="Hello!", has_tool_calls=False, usage={}))
+    p.chat = AsyncMock(
+        return_value=MagicMock(content="Hello!", has_tool_calls=False, usage={}, error=None)
+    )
     return p
 
 
@@ -56,8 +58,8 @@ async def test_skills_loader(ws):
     (s_dir / "SKILL.md").write_text("Skill content")
     loader = SkillsLoader(ws)
     skills = loader.list_skills()
-    assert any(s["name"] == "test_skill" for s in skills)
-    assert loader.load_skill("test_skill") == "Skill content"
+    s = next(s for s in skills if s["name"] == "test_skill")
+    assert s["path"].read_text() == "Skill content"
 
 
 @pytest.mark.asyncio

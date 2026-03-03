@@ -6,6 +6,7 @@ import re
 import smtplib
 
 import websockets
+from loguru import logger
 
 from nanobot.bus.events import InboundMessage
 
@@ -16,26 +17,29 @@ def _slackify(text):
 
 
 class BaseChannel:
-    def __init__(self, config, bus):
-        self.config, self.bus = config, bus
+    def __init__(self, config, bus, provider=None):
+        self.config, self.bus, self.provider = config, bus, provider
 
-    async def _handle(self, sid, cid, content, meta=None):
+    async def _handle(self, sid, cid, content, meta=None, media=None):
         await self.bus.publish_inbound(
             InboundMessage(
                 channel=self.name,
-                sender_id=sid,
                 chat_id=cid,
                 content=content or "",
                 metadata=meta or {},
+                media=media or [],
             )
         )
+
+    async def approve(self, req):
+        pass
 
 
 class WhatsappChannel(BaseChannel):
     name = "whatsapp"
 
     async def start(self):
-        me = None
+        me, authed = None, not self.config.bridge_token
         while True:
             try:
                 async with websockets.connect(self.config.bridge_url) as ws:
@@ -46,17 +50,25 @@ class WhatsappChannel(BaseChannel):
                         )
                     async for m in ws:
                         d = json.loads(m)
-                        if d.get("type") == "status" and d.get("status", "").startswith("me:"):
-                            me = d["status"][3:]
-                        if d.get("type") == "message":
+                        if d.get("type") == "status":
+                            st = d.get("status", "")
+                            if st.startswith("me:"):
+                                me = st[3:]
+                            if st == "connected" or st.startswith("me:"):
+                                authed = True
+                        if d.get("type") == "message" and authed:
                             sid, sender = d.get("sender", ""), d.get("sender", "")
                             if d.get("fromMe") and (not me or sid == me):
                                 sid = "me"
                             elif not self.config.allow_from and not d.get("fromMe"):
                                 continue
-                            await self._handle(sid, sender, d.get("content", ""))
-            except Exception:
+                            await self._handle(
+                                sid, sender, d.get("content", ""), media=d.get("media", [])
+                            )
+            except Exception as e:
+                logger.error(f"WhatsApp error: {e}")
                 self.ws = None
+                authed = not self.config.bridge_token
                 await asyncio.sleep(5)
 
     async def send(self, msg):
@@ -73,9 +85,18 @@ class TelegramChannel(BaseChannel):
         app = Application.builder().token(self.config.token).build()
 
         async def h(u, c):
-            await self._handle(str(u.effective_user.id), str(u.effective_chat.id), u.message.text)
+            m, imgs = u.message, []
+            if m.photo:
+                f = await m.photo[-1].get_file()
+                imgs.append(f.file_path)
+            await self._handle(
+                str(u.effective_user.id),
+                str(u.effective_chat.id),
+                m.text or m.caption or "",
+                media=imgs,
+            )
 
-        app.add_handler(MessageHandler(filters.TEXT, h))
+        app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, h))
         await app.initialize()
         await app.start_polling()
 
@@ -99,8 +120,15 @@ class DiscordChannel(BaseChannel):
         async def on_message(m):
             if not m.author.bot:
                 tid = str(m.id) if hasattr(m.channel, "threads") else None
+                imgs = [
+                    a.url for a in m.attachments if a.content_type and "image" in a.content_type
+                ]
                 await self._handle(
-                    str(m.author.id), str(m.channel.id), m.content, meta={"thread_id": tid}
+                    str(m.author.id),
+                    str(m.channel.id),
+                    m.content,
+                    meta={"thread_id": tid},
+                    media=imgs,
                 )
 
         await self.client.start(self.config.token)
@@ -125,18 +153,82 @@ class SlackChannel(BaseChannel):
         @app.event("message")
         async def h(e, s):
             tid = e.get("thread_ts")
+            imgs = []
+            for f in e.get("files", []):
+                if f.get("mimetype", "").startswith("image/"):
+                    imgs.append(f.get("url_private_download") or f.get("url_private"))
             await self.bus.publish_inbound(
                 InboundMessage(
-                    self.name,
-                    e["user"],
-                    e["channel"],
-                    e.get("text", ""),
+                    channel=self.name,
+                    chat_id=e["channel"],
+                    content=e.get("text", ""),
                     session_key_override=f"slack:{e['channel']}:{tid}" if tid else None,
                     metadata={"thread_ts": tid},
+                    media=imgs,
                 )
             )
 
-        await AsyncSocketModeHandler(app, self.config.app_token).start_async()
+        @app.action(re.compile("approve_.*"))
+        async def handle_approval(ack, body):
+            await ack()
+            action_id = body["actions"][0]["action_id"]
+            rid = action_id.split("_", 1)[1]
+            approved = "approve" in action_id
+            from nanobot.bus.events import ApprovalResponse
+
+            await self.bus.publish_approval_response(ApprovalResponse(id=rid, approved=approved))
+            await app.client.chat_update(
+                channel=body["channel"]["id"],
+                ts=body["message"]["ts"],
+                text="✅ Approved" if approved else "❌ Rejected",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"Decision: *{'Approved' if approved else 'Rejected'}*",
+                        },
+                    }
+                ],
+            )
+
+        handler = AsyncSocketModeHandler(app, self.config.app_token)
+        self.app = app
+        await handler.start_async()
+
+    async def approve(self, req):
+        if not getattr(self, "app", None):
+            return
+        await self.app.client.chat_postMessage(
+            channel=req.chat_id,
+            text=f"Approval Required: {req.title}",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Approval Required: {req.title}*\n`{req.content}`",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Approve"},
+                            "style": "primary",
+                            "action_id": f"approve_{req.id}",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Reject"},
+                            "style": "danger",
+                            "action_id": f"reject_{req.id}",
+                        },
+                    ],
+                },
+            ],
+        )
 
     async def send(self, msg):
         from slack_sdk.web.async_client import AsyncWebClient
@@ -154,36 +246,64 @@ class EmailChannel(BaseChannel):
     async def start(self):
         while True:
             try:
-                mail = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port)
-                mail.login(self.config.imap_username, self.config.imap_password)
-                mail.select("inbox")
-                _, data = mail.search(None, "UNSEEN")
-                for n in data[0].split():
-                    _, d = mail.fetch(n, "(RFC822)")
-                    raw = email.message_from_bytes(d[0][1])
-                    body = ""
-                    if raw.is_multipart():
-                        for p in raw.walk():
-                            if p.get_content_type() == "text/plain":
-                                body = p.get_payload(decode=True).decode()
-                                break
-                    else:
-                        body = raw.get_payload(decode=True).decode()
-                    s = email.utils.parseaddr(raw["From"])[1]
+
+                def _check_mail():
+                    m = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port)
+                    m.login(self.config.imap_username, self.config.imap_password)
+                    m.select("inbox")
+                    _, data = m.search(None, "UNSEEN")
+                    res = []
+                    for n in data[0].split():
+                        _, d = m.fetch(n, "(RFC822)")
+                        raw = email.message_from_bytes(d[0][1])
+                        body = ""
+                        if raw.is_multipart():
+                            for p in raw.walk():
+                                if p.get_content_type() == "text/plain":
+                                    body = p.get_payload(decode=True).decode()
+                                    break
+                        else:
+                            body = raw.get_payload(decode=True).decode()
+                        res.append((email.utils.parseaddr(raw["From"])[1], raw["Subject"], body))
+                    m.logout()
+                    return res
+
+                msgs = await asyncio.to_thread(_check_mail)
+                for s, subject, body in msgs:
+                    # Triage Logic (PRD Phase 6)
+                    if self.provider:
+                        t_resp = await self.provider.chat(
+                            [
+                                {
+                                    "role": "system",
+                                    "content": "Triage. Respond YES/NO: is this urgent?",
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Subject: {subject}\nFrom: {s}\nBody: {body[:500]}",
+                                },
+                            ]
+                        )
+                        if "YES" not in t_resp.content.upper():
+                            logger.info(f"📧 Email from {s} triaged as non-urgent.")
+                            continue
+
                     await self._handle(s, s, body)
-                mail.logout()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Email error: {e}")
             await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def send(self, msg):
         from email.message import EmailMessage
 
-        m = EmailMessage()
-        m.set_content(msg.content)
-        m["Subject"] = "AI Response"
-        m["To"] = msg.chat_id
-        m["From"] = self.config.from_address
-        with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port) as s:
-            s.login(self.config.smtp_username, self.config.smtp_password)
-            s.send_message(m)
+        def _send():
+            m = EmailMessage()
+            m.set_content(msg.content)
+            m["Subject"] = "AI Response"
+            m["To"] = msg.chat_id
+            m["From"] = self.config.from_address
+            with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port) as s:
+                s.login(self.config.smtp_username, self.config.smtp_password)
+                s.send_message(m)
+
+        await asyncio.to_thread(_send)

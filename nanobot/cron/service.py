@@ -305,46 +305,6 @@ class CronService:
         logger.info("Cron: added job '{}' ({})", name, job.id)
         return job
 
-    async def remove_job(self, job_id: str) -> bool:
-        store = self._load_store()
-        async with self._lock:
-            before = len(store.jobs)
-            store.jobs = [j for j in store.jobs if j.id != job_id]
-            removed = len(store.jobs) < before
-            if removed:
-                self._save_store()
-                self._arm_timer()
-                logger.info("Cron: removed job {}", job_id)
-        return removed
-
-    async def enable_job(self, job_id: str, enabled: bool = True) -> CronJob | None:
-        store = self._load_store()
-        async with self._lock:
-            for job in store.jobs:
-                if job.id == job_id:
-                    job.enabled = enabled
-                    job.updated_at_ms = _now_ms()
-                    if enabled:
-                        job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
-                    else:
-                        job.state.next_run_at_ms = None
-                    self._save_store()
-                    self._arm_timer()
-                    return job
-        return None
-
-    async def run_job(self, job_id: str, force: bool = False) -> bool:
-        store = self._load_store()
-        for job in store.jobs:
-            if job.id == job_id:
-                if not force and (not job.enabled):
-                    return False
-                await self._execute_job(job)
-                self._save_store()
-                self._arm_timer()
-                return True
-        return False
-
     def status(self) -> dict:
         store = self._load_store()
         return {

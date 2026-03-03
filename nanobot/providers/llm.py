@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -19,10 +19,9 @@ class ToolCallRequest:
 class LLMResponse:
     content: str
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
-    finish_reason: str = "stop"
     usage: dict[str, int] = field(default_factory=dict)
     streamed: bool = False
-    reasoning_content: Optional[str] = None
+    error: str | None = None
 
     @property
     def has_tool_calls(self):
@@ -30,9 +29,7 @@ class LLMResponse:
 
 
 class OpenCodeProvider:
-    def __init__(
-        self, api_key=None, api_base=None, bin_path="opencode", default_model="opencode-default"
-    ):
+    def __init__(self, bin_path="opencode", default_model="opencode-default"):
         self.bin_path, self.default_model = bin_path, default_model
 
     async def chat(self, messages, tools=None, model=None, on_progress=None, **k):
@@ -88,23 +85,30 @@ class OpenCodeProvider:
                         if on_progress and txt.strip():
                             await on_progress(txt)
                             streamed = True
+
+                        # Hardened Tool Call Parsing
                         curr = "".join(out_txt)
                         for m in re.finditer(r"(\{[\s\S]*?\"nanobot_tool_call\"[\s\S]*?\})", curr):
                             try:
-                                call = json.loads(m.group(1).strip()).get("nanobot_tool_call")
-                                if call and not any(
-                                    c.name == call["name"] and c.arguments == call.get("arguments")
-                                    for c in t_calls
-                                ):
-                                    t_calls.append(
-                                        ToolCallRequest(
-                                            id=f"call_{uuid.uuid4().hex[:8]}",
-                                            name=call["name"],
-                                            arguments=call.get("arguments", {}),
+                                raw_json = m.group(1).strip()
+                                call_data = json.loads(raw_json)
+                                call = call_data.get("nanobot_tool_call")
+                                if call and "name" in call:
+                                    cid = f"call_{uuid.uuid4().hex[:8]}"
+                                    if not any(
+                                        c.name == call["name"]
+                                        and c.arguments == call.get("arguments")
+                                        for c in t_calls
+                                    ):
+                                        t_calls.append(
+                                            ToolCallRequest(
+                                                id=cid,
+                                                name=call["name"],
+                                                arguments=call.get("arguments", {}),
+                                            )
                                         )
-                                    )
-                            except Exception:
-                                pass
+                            except (json.JSONDecodeError, KeyError):
+                                continue
                     elif ev.get("type") == "step_finish":
                         usage = pt.get("tokens", {})
                 except Exception:
@@ -112,7 +116,7 @@ class OpenCodeProvider:
             await proc.wait()
             await err_t
             if proc.returncode != 0:
-                return LLMResponse(content=f"Error {proc.returncode}", finish_reason="error")
+                return LLMResponse(content="", error=f"OpenCode exit code {proc.returncode}")
             u = {
                 "prompt_tokens": usage.get("prompt", 0),
                 "completion_tokens": usage.get("completion", 0),
@@ -122,7 +126,7 @@ class OpenCodeProvider:
                 content="".join(out_txt), tool_calls=t_calls, usage=u, streamed=streamed
             )
         except Exception as e:
-            return LLMResponse(content=f"Exception: {e}", finish_reason="error")
+            return LLMResponse(content="", error=str(e))
 
     def get_default_model(self):
         return self.default_model

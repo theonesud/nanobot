@@ -19,22 +19,22 @@ from .tools import ToolRegistry, connect_mcp, register_builtin_tools
 
 class SkillsLoader:
     def __init__(self, ws):
-        self.ws = ws
+        self.ws, self._cache = ws, None
 
     def list_skills(self):
+        if self._cache is not None:
+            return self._cache
         s = []
         for d in [(self.ws / "skills"), (Path(__file__).parent.parent / "skills")]:
             if d.exists():
                 for sd in d.iterdir():
                     if sd.is_dir() and (sd / "SKILL.md").exists():
                         s.append({"name": sd.name, "path": sd / "SKILL.md"})
+        self._cache = s
         return s
 
-    def load_skill(self, name):
-        for d in [(self.ws / "skills"), (Path(__file__).parent.parent / "skills")]:
-            if (d / name / "SKILL.md").exists():
-                return (d / name / "SKILL.md").read_text()
-        return None
+    def clear_cache(self):
+        self._cache = None
 
 
 class AgentLoop:
@@ -57,13 +57,15 @@ class AgentLoop:
             workspace,
             provider.get_default_model(),
         )
-        self.db, self.sessions, self.cron, self.mcp_config = (
+        self.db, self.sessions, self.cron = (
             Database(workspace),
             SessionManager(workspace),
             cron_service,
-            mcp_config or {},
         )
+        self.bus.db = self.db
+        self.mcp_config = mcp_config or (config.tools.mcp_servers if config else {})
         self.path_append = k.get("path_append", "")
+
         if auto_mcp and "playwright" not in self.mcp_config:
             self.mcp_config["playwright"] = type(
                 "srv",
@@ -83,6 +85,10 @@ class AgentLoop:
         )
         register_builtin_tools(self.tools, workspace)
         self._active, self._locks, self._running = {}, {}, False
+
+    @property
+    def _budget(self):
+        return self.config.agents.defaults.daily_budget_usd if self.config else 5.0
 
     async def run(self):
         self._running = True
@@ -120,6 +126,7 @@ class AgentLoop:
                     await self.bus.publish_outbound(res)
             except Exception as e:
                 logger.exception("Error")
+                self.db.log_trace(msg.session_key, "error", {"error": str(e), "msg": msg.content})
                 await self.bus.publish_outbound(
                     OutboundMessage(msg.channel, msg.chat_id, f"Error: {e}")
                 )
@@ -158,11 +165,21 @@ class AgentLoop:
         max_iters = self.config.agents.defaults.max_tool_iterations if self.config else 40
         while iters < max_iters:
             iters += 1
-            if self.db.get_daily_cost() > 5.0:
+            if self.db.get_daily_cost() > self._budget:
+                self.stop()
+                for tasks in self._active.values():
+                    for t in tasks:
+                        t.cancel()
                 return OutboundMessage(msg.channel, msg.chat_id, "Budget exceeded.")
+            self.db.log_trace(sess.key, "llm_request", {"model": self.model, "messages": msgs})
             resp = await self.provider.chat(
                 messages=msgs, tools=self.tools.get_definitions(), model=self.model
             )
+            self.db.log_trace(
+                sess.key, "llm_response", resp.__dict__ if hasattr(resp, "__dict__") else str(resp)
+            )
+            if resp.error:
+                return OutboundMessage(msg.channel, msg.chat_id, f"Provider Error: {resp.error}")
             if resp.usage:
                 p, c = resp.usage.get("prompt_tokens", 0), resp.usage.get("completion_tokens", 0)
                 ri, ro = get_model_pricing(self.model)
@@ -201,17 +218,37 @@ class AgentLoop:
                         msg.channel, msg.chat_id, f"⚙️ {tc.name}", metadata={"_progress": True}
                     )
                 )
-                if tc.name in {"exec", "write_file", "edit_file", "rewrite_code"}:
+                if tc.name not in self.tools.tools:
+                    msgs.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": f"Error: Tool {tc.name} not found",
+                        }
+                    )
+                    continue
+
+                if any(
+                    k in tc.name.lower()
+                    for k in ["exec", "write", "edit", "rewrite", "delete", "remove", "bash", "cmd"]
+                ):
                     a_m = self.config.agents.defaults.auditor_model if self.config else self.model
-                    aud_resp = await self.provider.chat(
-                        [
-                            {
-                                "role": "system",
-                                "content": "Security check. SAFE or DANGEROUS: <reason>",
-                            },
-                            {"role": "user", "content": f"{tc.name}: {tc.arguments}"},
-                        ],
-                        model=a_m,
+                    aud_msgs = [
+                        {
+                            "role": "system",
+                            "content": "Security check. SAFE or DANGEROUS: <reason>",
+                        },
+                        {"role": "user", "content": f"{tc.name}: {tc.arguments}"},
+                    ]
+                    self.db.log_trace(
+                        sess.key, "auditor_request", {"model": a_m, "messages": aud_msgs}
+                    )
+                    aud_resp = await self.provider.chat(aud_msgs, model=a_m)
+                    self.db.log_trace(
+                        sess.key,
+                        "auditor_response",
+                        aud_resp.__dict__ if hasattr(aud_resp, "__dict__") else str(aud_resp),
                     )
                     aud = aud_resp.content.upper()
                     if "DANGEROUS" in aud:
@@ -238,6 +275,9 @@ class AgentLoop:
                             continue
 
                 try:
+                    self.db.log_trace(
+                        sess.key, "tool_call", {"name": tc.name, "args": tc.arguments}
+                    )
                     res = await asyncio.wait_for(
                         self.tools.call(
                             tc.name,
@@ -252,8 +292,15 @@ class AgentLoop:
                         ),
                         60.0,
                     )
+                    self.db.log_trace(
+                        sess.key, "tool_result", {"name": tc.name, "result": str(res)}
+                    )
                 except asyncio.TimeoutError:
                     res = "Error: Tool timed out."
+                    self.db.log_trace(sess.key, "tool_error", {"name": tc.name, "error": "timeout"})
+                except Exception as e:
+                    res = f"Error: {e}"
+                    self.db.log_trace(sess.key, "tool_error", {"name": tc.name, "error": str(e)})
 
                 tagged_res = f"<untrusted_context>\n{res}\n</untrusted_context>"
                 msgs.append(
@@ -283,18 +330,23 @@ class AgentLoop:
             p = "Summarize for memory:\n" + "\n".join(
                 [f"[{m.get('role')}]: {m.get('content')}" for m in old]
             )
-            r = await self.provider.chat(
-                [
-                    {"role": "system", "content": "Memory manager."},
-                    {"role": "user", "content": f"Update memory:\n{p}"},
-                ],
-                model=self.model,
+            con_msgs = [
+                {"role": "system", "content": "Memory manager."},
+                {"role": "user", "content": f"Update memory:\n{p}"},
+            ]
+            self.db.log_trace(
+                sess.key, "consolidation_request", {"model": self.model, "messages": con_msgs}
+            )
+            r = await self.provider.chat(con_msgs, model=self.model)
+            self.db.log_trace(
+                sess.key, "consolidation_response", r.__dict__ if hasattr(r, "__dict__") else str(r)
             )
             with open(self.workspace / "memory/MEMORY.md", "a") as f:
                 f.write(f"\n### {datetime.now().date()}\n{r.content}\n")
+            self.db.log_trace(sess.key, "memory_consolidation", {"summary": r.content})
             sess.last_consolidated = len(sess.messages) - 10
         except Exception:
-            pass
+            logger.exception("Memory consolidation failed")
 
     async def process_direct(
         self, content, session_key="cli:direct", channel="cli", chat_id="direct"

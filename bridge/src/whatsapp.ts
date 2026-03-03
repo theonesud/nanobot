@@ -9,6 +9,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadContentFromMessage,
+  proto,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
@@ -116,16 +118,14 @@ export class WhatsAppClient {
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
-        const content = this.extractMessageContent(msg);
-        if (!content) continue;
-
+        const { content, media } = await this.extractInbound(msg);
+        if (!content && (!media || media.length === 0)) continue;
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
-
         this.options.onMessage({
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
-          pn: msg.key.remoteJidAlt || '',
           content,
+          media,
           timestamp: msg.messageTimestamp as number,
           isGroup,
           fromMe: msg.key.fromMe || false,
@@ -134,41 +134,35 @@ export class WhatsAppClient {
     });
   }
 
-  private extractMessageContent(msg: any): string | null {
+  private async extractInbound(msg: any): Promise<{ content: string; media?: string[] }> {
     const message = msg.message;
-    if (!message) return null;
+    if (!message) return { content: '' };
+    let content = '';
+    const media: string[] = [];
 
-    // Text message
-    if (message.conversation) {
-      return message.conversation;
+    if (message.conversation) content = message.conversation;
+    if (message.extendedTextMessage?.text) content = message.extendedTextMessage.text;
+    if (message.imageMessage) {
+      content = message.imageMessage.caption || '';
+      const data = await this.downloadMedia(message.imageMessage, 'image');
+      if (data) media.push(`data:image/jpeg;base64,${data.toString('base64')}`);
     }
+    if (message.videoMessage) content = message.videoMessage.caption || '';
+    if (message.documentMessage) content = message.documentMessage.caption || '';
+    return { content, media };
+  }
 
-    // Extended text (reply, link preview)
-    if (message.extendedTextMessage?.text) {
-      return message.extendedTextMessage.text;
+  private async downloadMedia(msg: any, type: 'image' | 'video' | 'audio'): Promise<Buffer | null> {
+    try {
+      const stream = await downloadContentFromMessage(msg, type);
+      let buffer = Buffer.from([]);
+      for await (const chunk of stream) {
+        buffer = Buffer.concat([buffer, chunk]);
+      }
+      return buffer;
+    } catch {
+      return null;
     }
-
-    // Image with caption
-    if (message.imageMessage?.caption) {
-      return `[Image] ${message.imageMessage.caption}`;
-    }
-
-    // Video with caption
-    if (message.videoMessage?.caption) {
-      return `[Video] ${message.videoMessage.caption}`;
-    }
-
-    // Document with caption
-    if (message.documentMessage?.caption) {
-      return `[Document] ${message.documentMessage.caption}`;
-    }
-
-    // Voice/Audio message
-    if (message.audioMessage) {
-      return `[Voice Message]`;
-    }
-
-    return null;
   }
 
   async sendMessage(to: string, text: string): Promise<void> {
