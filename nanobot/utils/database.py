@@ -32,10 +32,18 @@ class Database:
         try:
             import json
 
+            def _ser(obj):
+                if isinstance(obj, (datetime, Path)):
+                    return str(obj)
+                try:
+                    return dict(obj)
+                except Exception:
+                    return str(obj)
+
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     "INSERT INTO traces (session_id, event_type, data, timestamp) VALUES (?, ?, ?, ?)",
-                    (session_id, event_type, json.dumps(data), int(time.time())),
+                    (session_id, event_type, json.dumps(data, default=_ser), int(time.time())),
                 )
                 conn.commit()
         except Exception as e:

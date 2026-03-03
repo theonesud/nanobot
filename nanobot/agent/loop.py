@@ -63,7 +63,7 @@ class AgentLoop:
             cron_service,
         )
         self.bus.db = self.db
-        self.mcp_config = mcp_config or (config.tools.mcp_servers if config else {})
+        self.mcp_config = mcp_config or (getattr(config.tools, "mcp_servers", {}) if config else {})
         self.path_append = k.get("path_append", "")
 
         if auto_mcp and "playwright" not in self.mcp_config:
@@ -351,7 +351,7 @@ class AgentLoop:
     async def process_direct(
         self, content, session_key="cli:direct", channel="cli", chat_id="direct"
     ):
-        r = await self._process(InboundMessage(channel, "user", chat_id, content), session_key)
+        r = await self._process(InboundMessage(channel, chat_id, content), session_key)
         return r.content if r else ""
 
     async def close_mcp(self):
