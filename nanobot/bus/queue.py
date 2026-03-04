@@ -1,5 +1,7 @@
 import asyncio
 
+from loguru import logger
+
 from nanobot.bus.events import ApprovalRequest, ApprovalResponse, InboundMessage, OutboundMessage
 
 
@@ -37,9 +39,8 @@ class MessageBus:
             self.db.log_trace(f"{req.channel}:{req.chat_id}", "approval_request", req.__dict__)
         if req.id not in self.approval_responses:
             self.approval_responses[req.id] = asyncio.Queue()
-            asyncio.get_event_loop().call_later(
-                3600, lambda: self.approval_responses.pop(req.id, None)
-            )
+            loop = asyncio.get_running_loop()
+            loop.call_later(3600, lambda: self.approval_responses.pop(req.id, None))
         await self.approval_requests.put(req)
 
     async def consume_approval_request(self) -> ApprovalRequest:
@@ -50,6 +51,8 @@ class MessageBus:
             self.db.log_trace(resp.id, "approval_response", resp.__dict__)
         if resp.id in self.approval_responses:
             await self.approval_responses[resp.id].put(resp)
+        else:
+            logger.warning("Approval response {} dropped: no pending request", resp.id)
 
     async def wait_for_approval(
         self, request_id: str, timeout: float = 300.0

@@ -11,7 +11,7 @@ class Base(BaseModel):
 
 
 class WhatsAppConfig(Base):
-    enabled: bool = True
+    enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""
     allow_from: list[str] = Field(default_factory=list)
@@ -34,11 +34,11 @@ class EmailConfig(Base):
     imap_host: str = ""
     imap_port: int = 993
     imap_username: str = ""
-    imap_password: str = ""
+    imap_password: str = Field(default="", repr=False)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
-    smtp_password: str = ""
+    smtp_password: str = Field(default="", repr=False)
     from_address: str = ""
     poll_interval_seconds: int = 30
     allow_from: list[str] = Field(default_factory=list)
@@ -50,6 +50,7 @@ class SlackConfig(Base):
     bot_token: str = ""
     app_token: str = ""
     reply_in_thread: bool = True
+    allow_from: list[str] = Field(default_factory=list)
 
 
 class ChannelsConfig(Base):
@@ -79,9 +80,15 @@ class ExecToolConfig(Base):
     use_docker: bool = True
 
 
+class WebhookConfig(Base):
+    host: str = "127.0.0.1"
+    port: int = 8080
+    token: str = ""
+
+
 class ToolsConfig(Base):
     web: Any = Field(default_factory=dict)
-    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    exec_tool: ExecToolConfig = Field(default_factory=ExecToolConfig, alias="exec")
     browser_data_dir: str | None = None
 
 
@@ -89,9 +96,12 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    webhook: WebhookConfig = Field(default_factory=WebhookConfig)
 
     @property
     def workspace_path(self) -> Path:
         return Path(self.agents.defaults.workspace).expanduser()
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(
+        env_prefix="NANOBOT_", env_nested_delimiter="__", populate_by_name=True
+    )

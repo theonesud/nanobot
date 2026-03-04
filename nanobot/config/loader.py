@@ -1,5 +1,8 @@
+import copy
 import json
 from pathlib import Path
+
+from loguru import logger
 
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import get_data_path
@@ -22,10 +25,13 @@ def load_config(config_path: Path | None = None) -> Config:
             data = _migrate_config(data)
             return Config.model_validate(data)
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"Warning: Failed to load config from {path}: {e}")
-            print("Using default configuration.")
+            logger.warning("Failed to load config from {}: {}", path, e)
+            logger.warning("Using default configuration.")
     config = Config()
-    save_config(config, path)
+    try:
+        save_config(config, path)
+    except OSError as e:
+        logger.warning("Could not save default config to {}: {}", path, e)
     return config
 
 
@@ -39,6 +45,7 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
 
 
 def _migrate_config(data: dict) -> dict:
+    data = copy.deepcopy(data)
     tools = data.get("tools", {})
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:

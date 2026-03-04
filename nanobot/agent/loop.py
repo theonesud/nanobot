@@ -4,7 +4,7 @@ import json
 import platform
 import uuid
 from contextlib import AsyncExitStack
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
@@ -15,6 +15,10 @@ from nanobot.utils.database import Database
 from nanobot.utils.helpers import get_model_pricing, strip_think
 
 from .tools import ToolRegistry, connect_mcp, register_builtin_tools
+
+_AUDITOR_KEYWORDS = [
+    "exec", "write", "edit", "rewrite", "delete", "remove", "bash", "cmd", "rollback", "reset",
+]
 
 
 class SkillsLoader:
@@ -63,7 +67,9 @@ class AgentLoop:
             cron_service,
         )
         self.bus.db = self.db
-        self.mcp_config = mcp_config or (getattr(config.tools, "mcp_servers", {}) if config else {})
+        self.mcp_config = mcp_config or (
+            getattr(getattr(config, "tools", None), "mcp_servers", {}) if config else {}
+        )
         self.path_append = k.get("path_append", "")
 
         if auto_mcp and "playwright" not in self.mcp_config:
@@ -98,8 +104,12 @@ class AgentLoop:
                 await connect_mcp(self.mcp_config, self.tools, self._stack)
             while self._running:
                 try:
-                    msg = await asyncio.wait_for(self.bus.consume_inbound(), 1.0)
-                except asyncio.TimeoutError:
+                    if self.bus.inbound.empty():
+                        await asyncio.sleep(0.1)
+                        continue
+                    msg = self.bus.inbound.get_nowait()
+                    _, _, msg = msg
+                except asyncio.QueueEmpty:
                     continue
                 if msg.content.strip().lower() == "/stop":
                     for t in self._active.pop(msg.session_key, []):
@@ -110,16 +120,19 @@ class AgentLoop:
                     continue
                 t = asyncio.create_task(self._dispatch(msg))
                 self._active.setdefault(msg.session_key, []).append(t)
-                t.add_done_callback(
-                    lambda _, k=msg.session_key, task=t: (
-                        self._active[k].remove(task) if k in self._active else None
-                    )
-                )
+
+                def _done_cb(_, k=msg.session_key, task=t):
+                    lst = self._active.get(k)
+                    if lst and task in lst:
+                        lst.remove(task)
+
+                t.add_done_callback(_done_cb)
         finally:
             await self._stack.aclose()
 
     async def _dispatch(self, msg):
-        async with self._locks.setdefault(msg.session_key, asyncio.Lock()):
+        lock = self._locks.setdefault(msg.session_key, asyncio.Lock())
+        async with lock:
             try:
                 res = await self._process(msg)
                 if res:
@@ -130,35 +143,49 @@ class AgentLoop:
                 await self.bus.publish_outbound(
                     OutboundMessage(msg.channel, msg.chat_id, f"Error: {e}")
                 )
+            finally:
+                if not self._active.get(msg.session_key):
+                    self._locks.pop(msg.session_key, None)
 
     async def _process(self, msg, session_key=None):
         sess = self.sessions.get_or_create(session_key or msg.session_key)
+        content = msg.content
         if msg.metadata.get("is_godmode"):
-            msg.content += "\n\n[SYSTEM: GOD MODE] You may modify source code."
+            content += "\n\n[SYSTEM: GOD MODE] You may modify source code."
         history = sess.get_history(50)
-        # Sanitize history (Sanitary Logic from baseline)
         for h in history:
             if isinstance(h.get("content"), list):
                 h["content"] = "".join(
                     [i.get("text", "") for i in h["content"] if i.get("type") == "text"]
                 )
 
-        sys = f"Time: {datetime.now()} | {platform.system()} | {self.workspace}\n"
+        now = datetime.now(timezone.utc)
+        sys_prompt = f"Time: {now} | {platform.system()} | {self.workspace}\n"
         for f in ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]:
-            if (self.workspace / f).exists():
-                sys += f"\n## {f}\n" + (self.workspace / f).read_text()
-        if (self.workspace / "memory/MEMORY.md").exists():
-            sys += "\n## Memory\n" + (self.workspace / "memory/MEMORY.md").read_text()
+            fp = self.workspace / f
+            if fp.exists():
+                try:
+                    sys_prompt += f"\n## {f}\n" + fp.read_text()
+                except Exception:
+                    logger.debug("Failed to read {}", fp)
+        mem_fp = self.workspace / "memory/MEMORY.md"
+        if mem_fp.exists():
+            try:
+                sys_prompt += "\n## Memory\n" + mem_fp.read_text()
+            except Exception:
+                logger.debug("Failed to read {}", mem_fp)
         if sk := self.skills.list_skills():
-            sys += "\n## Skills\n" + "\n".join([f"- {s['name']}" for s in sk])
+            sys_prompt += "\n## Skills\n" + "\n".join([f"- {s['name']}" for s in sk])
         if self.cron and (jobs := self.cron.list_jobs()):
-            sys += "\n## Cron Jobs\n" + "\n".join([f"- {j.name}" for j in jobs])
+            sys_prompt += "\n## Cron Jobs\n" + "\n".join([f"- {j.name}" for j in jobs])
 
-        user_msg = [{"type": "text", "text": msg.content}]
+        user_msg = [{"type": "text", "text": content}]
         for m in msg.media:
             user_msg.append({"type": "image_url", "image_url": {"url": m}})
         msgs = (
-            [{"role": "system", "content": sys}] + history + [{"role": "user", "content": user_msg}]
+            [{"role": "system", "content": sys_prompt}]
+            + history
+            + [{"role": "user", "content": user_msg}]
         )
 
         iters, final = 0, ""
@@ -166,11 +193,9 @@ class AgentLoop:
         while iters < max_iters:
             iters += 1
             if self.db.get_daily_cost() > self._budget:
-                self.stop()
-                for tasks in self._active.values():
-                    for t in tasks:
-                        t.cancel()
-                return OutboundMessage(msg.channel, msg.chat_id, "Budget exceeded.")
+                for t in self._active.pop(msg.session_key, []):
+                    t.cancel()
+                return OutboundMessage(msg.channel, msg.chat_id, "Budget exceeded for this session.")
             self.db.log_trace(sess.key, "llm_request", {"model": self.model, "messages": msgs})
             resp = await self.provider.chat(
                 messages=msgs, tools=self.tools.get_definitions(), model=self.model
@@ -229,10 +254,7 @@ class AgentLoop:
                     )
                     continue
 
-                if any(
-                    k in tc.name.lower()
-                    for k in ["exec", "write", "edit", "rewrite", "delete", "remove", "bash", "cmd"]
-                ):
+                if any(k in tc.name.lower() for k in _AUDITOR_KEYWORDS):
                     a_m = self.config.agents.defaults.auditor_model if self.config else self.model
                     aud_msgs = [
                         {
@@ -250,7 +272,11 @@ class AgentLoop:
                         "auditor_response",
                         aud_resp.__dict__ if hasattr(aud_resp, "__dict__") else str(aud_resp),
                     )
-                    aud = aud_resp.content.upper()
+                    if aud_resp.error:
+                        logger.warning("Auditor failed, blocking tool call: {}", aud_resp.error)
+                        aud = "DANGEROUS"
+                    else:
+                        aud = (aud_resp.content or "").upper()
                     if "DANGEROUS" in aud:
                         rid = str(uuid.uuid4())
                         await self.bus.publish_approval_request(
@@ -282,13 +308,13 @@ class AgentLoop:
                         self.tools.call(
                             tc.name,
                             tc.arguments,
-                            bus=self.bus,
-                            msg=msg,
-                            provider=self.provider,
-                            cron=self.cron,
-                            session_key=sess.key,
-                            path_append=self.path_append,
-                            loop=self,
+                            _ctx_bus=self.bus,
+                            _ctx_msg=msg,
+                            _ctx_provider=self.provider,
+                            _ctx_cron=self.cron,
+                            _ctx_session_key=sess.key,
+                            _ctx_path_append=self.path_append,
+                            _ctx_loop=self,
                         ),
                         60.0,
                     )
@@ -306,25 +332,38 @@ class AgentLoop:
                 msgs.append(
                     {"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": tagged_res}
                 )
+        else:
+            final = "I reached the maximum number of tool iterations without a final answer."
 
         skip = len(history) + 2
+        history_lines = []
         for m in msgs[skip:]:
             e = copy.deepcopy(m)
-            e["timestamp"] = datetime.now().isoformat()
+            e["timestamp"] = now.isoformat()
             sess.messages.append(e)
+            history_lines.append(
+                f"\n[{e.get('role')}]: {e.get('content', '')} {e.get('tool_calls', '')}\n"
+            )
+
+        if history_lines:
             p = self.workspace / "memory/HISTORY.md"
             p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "a") as f:
-                f.write(f"\n[{e.get('role')}]: {e.get('content', '')} {e.get('tool_calls', '')}\n")
+            try:
+                with open(p, "a") as f:
+                    f.writelines(history_lines)
+            except OSError:
+                logger.debug("Failed to write HISTORY.md")
 
         if len(sess.messages) - sess.last_consolidated > 50:
-            asyncio.create_task(self._consolidate(sess))
+            snapshot = copy.deepcopy(sess.messages)
+            last_c = sess.last_consolidated
+            asyncio.create_task(self._consolidate(sess, snapshot, last_c))
         await self.sessions.save_async(sess)
-        return OutboundMessage(msg.channel, msg.chat_id, final)
+        return OutboundMessage(msg.channel, msg.chat_id, final or "")
 
-    async def _consolidate(self, sess):
+    async def _consolidate(self, sess, messages_snapshot, last_consolidated):
         try:
-            old = sess.messages[sess.last_consolidated : -10]
+            old = messages_snapshot[last_consolidated:-10]
             if not old:
                 return
             p = "Summarize for memory:\n" + "\n".join(
@@ -342,9 +381,9 @@ class AgentLoop:
                 sess.key, "consolidation_response", r.__dict__ if hasattr(r, "__dict__") else str(r)
             )
             with open(self.workspace / "memory/MEMORY.md", "a") as f:
-                f.write(f"\n### {datetime.now().date()}\n{r.content}\n")
+                f.write(f"\n### {datetime.now(timezone.utc).date()}\n{r.content}\n")
             self.db.log_trace(sess.key, "memory_consolidation", {"summary": r.content})
-            sess.last_consolidated = len(sess.messages) - 10
+            sess.last_consolidated = len(messages_snapshot) - 10
         except Exception:
             logger.exception("Memory consolidation failed")
 

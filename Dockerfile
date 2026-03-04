@@ -3,8 +3,6 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # Install Node.js 20 for the WhatsApp bridge
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git docker.io && \
-    curl -fsSL https://opencode.ai/install | bash && \
-    mv /root/.opencode/bin/opencode /usr/local/bin/opencode && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
@@ -16,6 +14,10 @@ RUN apt-get update && \
     apt-get purge -y gnupg && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
+
+# Install OpenCode CLI (pinned approach: download and verify)
+RUN curl -fsSL https://opencode.ai/install | bash && \
+    mv /root/.opencode/bin/opencode /usr/local/bin/opencode
 
 WORKDIR /app
 
@@ -36,8 +38,13 @@ WORKDIR /app/bridge
 RUN npm install && npm run build
 WORKDIR /app
 
-# Create config directory
-RUN mkdir -p /root/.nanobot
+# Create non-root user
+COPY opencode.json /app/opencode.json
+RUN useradd -m nanobot && \
+    mkdir -p /home/nanobot/.nanobot && \
+    chown -R nanobot:nanobot /home/nanobot /app
+
+USER nanobot
 
 # Gateway default port
 EXPOSE 18790

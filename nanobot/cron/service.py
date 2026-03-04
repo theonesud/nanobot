@@ -64,6 +64,8 @@ class CronService:
         self._timer_task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
+        self._active_tasks: set[asyncio.Task] = set()
+        self._running_job_ids: set[str] = set()
 
     def _load_store(self) -> CronStore:
         if self._store:
@@ -149,27 +151,29 @@ class CronService:
                 for j in self._store.jobs
             ],
         }
-        try:
-            _atomic_write(self.store_path, json.dumps(data, indent=2, ensure_ascii=False))
-        except Exception:
-            raise
+        _atomic_write(self.store_path, json.dumps(data, indent=2, ensure_ascii=False))
 
     async def start(self) -> None:
         async with self._lock:
             self._running = True
             self._load_store()
             self._recompute_next_runs()
-            self._save_store()
+            await asyncio.to_thread(self._save_store)
             self._arm_timer()
         logger.info(
             "Cron service started with {} jobs", len(self._store.jobs if self._store else [])
         )
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         self._running = False
         if self._timer_task:
             self._timer_task.cancel()
             self._timer_task = None
+        for t in self._active_tasks:
+            t.cancel()
+        if self._active_tasks:
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
+        self._active_tasks.clear()
 
     def _recompute_next_runs(self) -> None:
         if not self._store:
@@ -180,7 +184,11 @@ class CronService:
                 continue
             if job.state.next_run_at_ms and job.state.next_run_at_ms > now:
                 continue
-            job.state.next_run_at_ms = _compute_next_run(job.schedule, now)
+            nxt = _compute_next_run(job.schedule, now)
+            if nxt is None and job.schedule.kind == "at":
+                logger.warning("Cron job '{}' has past 'at' schedule, marking as missed", job.name)
+                job.state.last_status = "skipped"
+            job.state.next_run_at_ms = nxt
 
     def _get_next_wake_ms(self) -> int | None:
         if not self._store:
@@ -219,7 +227,7 @@ class CronService:
                 j
                 for j in self._store.jobs
                 if j.enabled
-                and (not getattr(j, "_is_running", False))
+                and j.id not in self._running_job_ids
                 and j.state.next_run_at_ms
                 and (now >= j.state.next_run_at_ms)
             ]
@@ -231,41 +239,49 @@ class CronService:
         async def _run_and_save(job: CronJob) -> None:
             try:
                 await self._execute_job(job)
+            except Exception:
+                logger.exception("Cron job '{}' crashed", job.name)
             finally:
                 async with self._lock:
-                    job._is_running = False
+                    self._running_job_ids.discard(job.id)
                     await asyncio.to_thread(self._save_store)
                 self._arm_timer()
 
         for job in due_jobs:
-            job._is_running = True
-            asyncio.create_task(_run_and_save(job))
+            self._running_job_ids.add(job.id)
+            t = asyncio.create_task(_run_and_save(job))
+            self._active_tasks.add(t)
+            t.add_done_callback(self._active_tasks.discard)
         if not due_jobs:
             self._arm_timer()
 
     async def _execute_job(self, job: CronJob) -> None:
         start_ms = _now_ms()
         logger.info("Cron: executing job '{}' ({})", job.name, job.id)
+        result_status = "ok"
+        result_error = None
         try:
             if self.on_job:
                 await self.on_job(job)
-            job.state.last_status = "ok"
-            job.state.last_error = None
             logger.info("Cron: job '{}' completed", job.name)
         except Exception as e:
-            job.state.last_status = "error"
-            job.state.last_error = str(e)
+            result_status = "error"
+            result_error = str(e)
             logger.error("Cron: job '{}' failed: {}", job.name, e)
-        job.state.last_run_at_ms = start_ms
-        job.updated_at_ms = _now_ms()
-        if job.schedule.kind == "at":
-            if job.delete_after_run:
-                self._store.jobs = [j for j in self._store.jobs if j.id != job.id]
+
+        async with self._lock:
+            job.state.last_status = result_status
+            job.state.last_error = result_error
+            job.state.last_run_at_ms = start_ms
+            job.updated_at_ms = _now_ms()
+            if job.schedule.kind == "at":
+                if job.delete_after_run:
+                    self._store.jobs = [j for j in self._store.jobs if j.id != job.id]
+                else:
+                    job.enabled = False
+                    job.state.next_run_at_ms = None
             else:
-                job.enabled = False
-                job.state.next_run_at_ms = None
-        else:
-            job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
+                job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
         store = self._load_store()
@@ -281,17 +297,18 @@ class CronService:
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
+        kind: str = "agent_turn",
     ) -> CronJob:
         store = self._load_store()
         _validate_schedule_for_add(schedule)
         now = _now_ms()
         job = CronJob(
-            id=str(uuid.uuid4())[:12],
+            id=uuid.uuid4().hex[:12],
             name=name,
             enabled=True,
             schedule=schedule,
             payload=CronPayload(
-                kind="agent_turn", message=message, deliver=deliver, channel=channel, to=to
+                kind=kind, message=message, deliver=deliver, channel=channel, to=to
             ),
             state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
             created_at_ms=now,
@@ -300,7 +317,7 @@ class CronService:
         )
         async with self._lock:
             store.jobs.append(job)
-            self._save_store()
+            await asyncio.to_thread(self._save_store)
             self._arm_timer()
         logger.info("Cron: added job '{}' ({})", name, job.id)
         return job

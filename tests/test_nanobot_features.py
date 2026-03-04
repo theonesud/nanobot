@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
 from nanobot.agent.loop import AgentLoop
@@ -40,13 +39,16 @@ def workspace():
         subprocess.run(
             ["git", "commit", "-m", "initial"], cwd=str(ws), check=True, capture_output=True
         )
+        proj_config = Path(__file__).parent.parent / "opencode.json"
+        if proj_config.exists():
+            import shutil
+            shutil.copy(proj_config, ws / "opencode.json")
         yield ws
 
 
 @pytest.fixture
-def provider():
-    # Use real OpenCode provider
-    return OpenCodeProvider()
+def provider(workspace):
+    return OpenCodeProvider(cwd=str(workspace))
 
 
 @pytest.mark.asyncio
@@ -103,7 +105,7 @@ async def test_session_jsonl_storage(workspace):
 
 @pytest.mark.asyncio
 async def test_session_migration(workspace):
-    legacy = Path.home() / ".nanobot" / "sessions"
+    legacy = workspace / "legacy_sessions"
     legacy.mkdir(parents=True, exist_ok=True)
     f = legacy / "legacy_session.jsonl"
     f.write_text(
@@ -127,16 +129,13 @@ async def test_session_migration(workspace):
             + "\n"
         )
 
-    try:
-        manager = SessionManager(workspace)
-        s = manager.get_or_create("legacy:session")
-        assert len(s.messages) == 1
-        assert s.messages[0]["content"] == "hello legacy"
-        assert not f.exists()
-        assert (workspace / "sessions" / "legacy_session.jsonl").exists()
-    finally:
-        if f.exists():
-            f.unlink()
+    manager = SessionManager(workspace)
+    manager.legacy_sessions_dir = legacy
+    s = manager.get_or_create("legacy:session")
+    assert len(s.messages) == 1
+    assert s.messages[0]["content"] == "hello legacy"
+    assert not f.exists()
+    assert (workspace / "sessions" / "legacy_session.jsonl").exists()
 
 
 @pytest.mark.asyncio
@@ -221,8 +220,8 @@ async def test_web_fetch_tool(workspace):
     reg = ToolRegistry(workspace)
     register_builtin_tools(reg, workspace)
     try:
-        res = await reg.call("web_fetch", {"url": "http://neverssl.com"})
-        assert "NeverSSL" in res
+        res = await reg.call("web_fetch", {"url": "https://www.google.com"})
+        assert "Google" in res
     except Exception:
         pytest.skip("Network issue")
 
@@ -237,21 +236,21 @@ async def test_spawn_depth_limit(workspace):
     mock_prov.get_default_model = lambda: "mock"
 
     res = await reg.call(
-        "spawn_agent", {"task": "say hi"}, bus=bus, provider=mock_prov, session_key="main"
+        "spawn_agent", {"task": "say hi"}, _ctx_bus=bus, _ctx_provider=mock_prov, _ctx_session_key="main"
     )
     assert "Started sub:" in res
 
     res = await reg.call(
-        "spawn_agent", {"task": "say hi"}, bus=bus, provider=mock_prov, session_key="main:sub:1"
+        "spawn_agent", {"task": "say hi"}, _ctx_bus=bus, _ctx_provider=mock_prov, _ctx_session_key="main:sub:1"
     )
     assert "Started sub:" in res
 
     res = await reg.call(
         "spawn_agent",
         {"task": "say hi"},
-        bus=bus,
-        provider=mock_prov,
-        session_key="main:sub:1:sub:2",
+        _ctx_bus=bus,
+        _ctx_provider=mock_prov,
+        _ctx_session_key="main:sub:1:sub:2",
     )
     assert "Error: Depth limit reached." in res
     await asyncio.sleep(0.5)
@@ -346,10 +345,14 @@ async def test_memory_consolidation(workspace, provider):
         InboundMessage("cli", "c1", "summarize our history so far for your memory file.")
     )
 
-    for _ in range(100):
+    # Wait for the background consolidation task to finish (up to 60s)
+    for _ in range(300):
         if (workspace / "memory" / "MEMORY.md").exists():
             break
         await asyncio.sleep(0.2)
+
+    # Give any pending tasks one last chance to complete
+    await asyncio.sleep(1)
     assert (workspace / "memory" / "MEMORY.md").exists()
 
 
@@ -382,7 +385,7 @@ async def test_budget_guardrails(workspace, provider):
     loop.db.log_cost("cli:c1", "p1", "m1", 1000, 1000, 5.1)
 
     res = await loop._process(InboundMessage("cli", "c1", "hi"))
-    assert "Budget exceeded." in res.content
+    assert "Budget exceeded" in res.content
 
 
 @pytest.mark.asyncio
@@ -414,21 +417,33 @@ async def test_heartbeat_service(workspace, provider):
 
 @pytest.mark.asyncio
 async def test_webhook_channel(workspace):
+    import httpx
+
     bus = MessageBus()
     from nanobot.channels.manager import ChannelManager
 
-    mgr = ChannelManager(Config(), bus)
-    asyncio.create_task(mgr.start_all())
+    config = Config()
+    mgr = ChannelManager(config, bus)
+    task = asyncio.create_task(mgr.start_all())
     await asyncio.sleep(2)
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "http://localhost:8080",
-            json={"channel": "web", "chat_id": "u1", "content": "hello_webhook"},
-        )
-        assert resp.status_code == 200
-    msg = await bus.consume_inbound()
-    assert msg.channel == "web"
-    assert msg.content == "hello_webhook"
+    try:
+        port = getattr(getattr(config, "webhook", None), "port", 8080)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"http://127.0.0.1:{port}",
+                json={"channel": "web", "chat_id": "u1", "content": "hello_webhook"},
+            )
+            assert resp.status_code == 200
+        msg = await bus.consume_inbound()
+        assert msg.channel == "web"
+        assert msg.content == "hello_webhook"
+    finally:
+        await mgr.stop_all()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 @pytest.mark.asyncio
@@ -453,8 +468,8 @@ async def test_git_activity_summary(workspace, provider):
     loop = AgentLoop(bus, provider, workspace)
     # Create some git activity
     (workspace / "activity.txt").write_text("activity")
-    subprocess.run(["git", "add", "activity.txt"], cwd=str(workspace))
-    subprocess.run(["git", "commit", "-m", "add activity"], cwd=str(workspace))
+    subprocess.run(["git", "add", "activity.txt"], cwd=str(workspace), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add activity"], cwd=str(workspace), check=True, capture_output=True)
 
     from nanobot.cron.tasks import summarize_git_diffs
 

@@ -92,6 +92,10 @@ export class WhatsAppClient {
 
         if (shouldReconnect && !this.reconnecting) {
           this.reconnecting = true;
+          // Remove old event listeners before reconnecting
+          if (this.sock) {
+            this.sock.ev.removeAllListeners();
+          }
           console.log('Reconnecting in 5 seconds...');
           setTimeout(() => {
             this.reconnecting = false;
@@ -155,11 +159,11 @@ export class WhatsAppClient {
   private async downloadMedia(msg: any, type: 'image' | 'video' | 'audio'): Promise<Buffer | null> {
     try {
       const stream = await downloadContentFromMessage(msg, type);
-      let buffer = Buffer.from([]);
+      const chunks: Buffer[] = [];
       for await (const chunk of stream) {
-        buffer = Buffer.concat([buffer, chunk]);
+        chunks.push(chunk);
       }
-      return buffer;
+      return Buffer.concat(chunks);
     } catch {
       return null;
     }
