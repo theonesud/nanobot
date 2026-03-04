@@ -151,7 +151,7 @@ def gateway():
             asyncio.create_task(heart.start(), name="heartbeat"),
         ]
         done_waiter = asyncio.create_task(shutdown_event.wait())
-        finished, _ = await asyncio.wait(
+        _, _ = await asyncio.wait(
             [*tasks, done_waiter], return_when=asyncio.FIRST_COMPLETED
         )
         for t in tasks:
