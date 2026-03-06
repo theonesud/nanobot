@@ -11,16 +11,22 @@ from pathlib import Path
 from typing import Callable
 
 import httpx
+from loguru import logger
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from nanobot.cron.types import CronSchedule
 from nanobot.utils.files import atomic_write as _atomic_write
 
+_MAX_READ_SIZE = 10_000_000
+
 
 def _resolve(path: str, ws: Path | None) -> Path:
     p = Path(path).expanduser()
-    return (ws / p).resolve() if not p.is_absolute() and ws else p.resolve()
+    resolved = (ws / p).resolve() if not p.is_absolute() and ws else p.resolve()
+    if ws and not str(resolved).startswith(str(ws.resolve())):
+        raise ValueError(f"Path '{path}' escapes workspace boundary")
+    return resolved
 
 
 def _write(path: Path, content: str):
@@ -51,7 +57,7 @@ def _write(path: Path, content: str):
             capture_output=True,
         )
     except Exception:
-        pass
+        logger.debug("Auto-commit failed for {}", path, exc_info=True)
 
 
 class ToolRegistry:
@@ -62,16 +68,23 @@ class ToolRegistry:
         self.tools[name] = {"name": name, "description": desc, "parameters": params, "fn": fn}
 
     def get_definitions(self):
-        return [{"type": "function", "function": t} for t in self.tools.values()]
+        return [
+            {
+                "type": "function",
+                "function": {k: v for k, v in t.items() if k != "fn"},
+            }
+            for t in self.tools.values()
+        ]
 
     async def call(self, name: str, args: dict, **kwargs) -> str:
         if name not in self.tools:
             return f"Error: Tool {name} not found"
         try:
             fn = self.tools[name]["fn"]
+            merged = {**args, **kwargs}
             if asyncio.iscoroutinefunction(fn):
-                return await fn(**{**kwargs, **args})
-            return fn(**{**kwargs, **args})
+                return await fn(**merged)
+            return fn(**merged)
         except Exception as e:
             return f"Error: {e}"
 
@@ -95,13 +108,17 @@ async def connect_mcp(mcp_config, reg, stack):
 
                 reg.add(t_n, t.description, t.inputSchema, m_fn)
         except Exception:
-            pass
+            logger.warning("Failed to connect MCP server '{}'", name, exc_info=True)
 
 
 def register_builtin_tools(reg, ws: Path):
     async def read_file(path, **k):
         p = _resolve(path, ws)
-        return p.read_text() if p.is_file() else f"Error: {path} not found"
+        if not p.is_file():
+            return f"Error: {path} not found"
+        if p.stat().st_size > _MAX_READ_SIZE:
+            return f"Error: File too large ({p.stat().st_size} bytes, limit {_MAX_READ_SIZE})"
+        return p.read_text()
 
     reg.add(
         "read_file",
@@ -129,6 +146,8 @@ def register_builtin_tools(reg, ws: Path):
     async def edit_file(path, old_text, new_text, **k):
         p = _resolve(path, ws)
         s = p.read_text()
+        if old_text not in s:
+            return f"Error: old_text not found in {path}"
         _write(p, s.replace(old_text, new_text, 1))
         return f"Edited {path}"
 
@@ -162,10 +181,10 @@ def register_builtin_tools(reg, ws: Path):
         list_dir,
     )
 
-    async def exec(command, use_docker=False, **k):
+    async def run_shell(command, use_docker=False, **k):
         env = {**os.environ}
-        if k.get("path_append"):
-            env["PATH"] = f"{env.get('PATH', '')}:{k['path_append']}"
+        if k.get("_ctx_path_append"):
+            env["PATH"] = f"{env.get('PATH', '')}:{k['_ctx_path_append']}"
         cmd = (
             [
                 "docker",
@@ -191,7 +210,7 @@ def register_builtin_tools(reg, ws: Path):
             env=env,
         )
         o, e = await p.communicate()
-        return (o.decode() + e.decode()) or "Success"
+        return (o.decode(errors="replace") + e.decode(errors="replace")) or "Success"
 
     reg.add(
         "exec",
@@ -201,7 +220,7 @@ def register_builtin_tools(reg, ws: Path):
             "properties": {"command": {"type": "string"}, "use_docker": {"type": "boolean"}},
             "required": ["command"],
         },
-        exec,
+        run_shell,
     )
 
     async def web(url, **k):
@@ -220,16 +239,33 @@ def register_builtin_tools(reg, ws: Path):
     )
 
     async def spawn(task, **k):
-        depth = k.get("session_key", "").count("sub:")
+        depth = k.get("_ctx_session_key", "").count("sub:")
         if depth >= 2:
             return "Error: Depth limit reached."
         from .loop import AgentLoop
 
-        loop = AgentLoop(k["bus"], k["provider"], ws)
-        tid = f"sub:{uuid.uuid4().hex[:8]}"
-        asyncio.create_task(
-            loop.process_direct(task, session_key=f"{k.get('session_key', 'main')}:{tid}")
+        parent = k.get("_ctx_loop")
+        loop = AgentLoop(
+            k["_ctx_bus"],
+            k["_ctx_provider"],
+            ws,
+            config=parent.config if parent else None,
+            mcp_config=parent.mcp_config if parent else None,
+            cron_service=parent.cron if parent else None,
         )
+        tid = f"sub:{uuid.uuid4().hex[:8]}"
+
+        async def _run_subagent():
+            try:
+                await loop.process_direct(
+                    task, session_key=f"{k.get('_ctx_session_key', 'main')}:{tid}"
+                )
+            except Exception:
+                logger.exception("Subagent {} failed", tid)
+            finally:
+                await loop.close_mcp()
+
+        asyncio.create_task(_run_subagent())
         return f"Started {tid}"
 
     reg.add(
@@ -252,6 +288,8 @@ def register_builtin_tools(reg, ws: Path):
             return f"Created {tid}"
         if action == "update" and id:
             p = d / f"{id}.json"
+            if not p.exists():
+                return f"Error: Task {id} not found"
             t = json.loads(p.read_text())
             t["title"], t["status"] = title or t["title"], status or t["status"]
             p.write_text(json.dumps(t))
@@ -275,14 +313,22 @@ def register_builtin_tools(reg, ws: Path):
     )
 
     async def add_job(name, schedule_kind, schedule_expr, message, **k):
-        if not k.get("cron"):
+        if not k.get("_ctx_cron"):
             return "Error: Cron service not available."
+        every_ms = None
+        if schedule_kind == "every":
+            try:
+                every_ms = int(schedule_expr)
+            except ValueError:
+                return f"Error: schedule_expr must be an integer (ms) for 'every' kind, got '{schedule_expr}'"
         sched = CronSchedule(
             kind=schedule_kind,
             expr=schedule_expr if schedule_kind == "cron" else None,
-            every_ms=int(schedule_expr) if schedule_kind == "every" else None,
+            every_ms=every_ms,
         )
-        await k["cron"].add_job(name, sched, message, channel=k["msg"].channel, to=k["msg"].chat_id)
+        await k["_ctx_cron"].add_job(
+            name, sched, message, channel=k["_ctx_msg"].channel, to=k["_ctx_msg"].chat_id
+        )
         return f"Scheduled job: {name}"
 
     reg.add(
@@ -304,8 +350,8 @@ def register_builtin_tools(reg, ws: Path):
     async def send_message(content, **k):
         from nanobot.bus.events import OutboundMessage
 
-        await k["bus"].publish_outbound(
-            OutboundMessage(k["msg"].channel, k["msg"].chat_id, content)
+        await k["_ctx_bus"].publish_outbound(
+            OutboundMessage(k["_ctx_msg"].channel, k["_ctx_msg"].chat_id, content)
         )
         return "Sent."
 
@@ -318,6 +364,8 @@ def register_builtin_tools(reg, ws: Path):
 
     async def rewrite_code(path, symbol, new_code, **k):
         p = _resolve(path, ws)
+        if not p.suffix == ".py":
+            return f"Error: rewrite_code only supports Python files, got {p.suffix}"
         s = p.read_text()
         tree = ast.parse(s)
 
@@ -357,13 +405,13 @@ def register_builtin_tools(reg, ws: Path):
         code = re.compile(r"^", re.M).sub(indent, textwrap.dedent(new_code).strip()) + "\n"
         lines[target.lineno - 1 : target.end_lineno] = [code]
         _write(p, "".join(lines))
-        if k.get("loop") and hasattr(k["loop"], "skills"):
-            k["loop"].skills.clear_cache()
+        if k.get("_ctx_loop") and hasattr(k["_ctx_loop"], "skills"):
+            k["_ctx_loop"].skills.clear_cache()
         return f"Rewrote {symbol}"
 
     reg.add(
         "rewrite_code",
-        "Rewrite code",
+        "Rewrite Python code symbol",
         {
             "type": "object",
             "properties": {
@@ -388,8 +436,10 @@ def register_builtin_tools(reg, ws: Path):
     )
 
     async def reload(**k):
-        if k.get("loop"):
-            await k["loop"].close_mcp()
+        loop = k.get("_ctx_loop")
+        if loop:
+            await loop.close_mcp()
+            loop.stop()
         os.execv(sys.executable, [sys.executable, "-m", "nanobot.cli.commands", "gateway"])
 
     reg.add("reload_nanobot", "Reload", {"type": "object", "properties": {}}, reload)

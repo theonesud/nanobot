@@ -1,4 +1,3 @@
-import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -48,10 +47,3 @@ def mock_session():
     ]
     session.last_consolidated = 0
     return session
-
-
-@pytest.fixture
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()

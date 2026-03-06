@@ -23,7 +23,8 @@ app, console = typer.Typer(name="nanobot", no_args_is_help=True), Console()
 
 def _make_provider(config, model=None):
     return OpenCodeProvider(
-        bin_path="opencode", default_model=model or config.agents.defaults.model
+        bin_path="opencode", default_model=model or config.agents.defaults.model,
+        cwd=str(config.workspace_path),
     )
 
 
@@ -38,7 +39,8 @@ async def _handle_approvals(bus):
 
 @app.command()
 def agent(
-    interactive: bool = typer.Option(True, "--interactive/--no-interactive"), model: str = None
+    interactive: bool = typer.Option(True, "--interactive/--no-interactive"),
+    model: str = typer.Option(None, "--model", "-m"),
 ):
     async def run():
         config = load_config()
@@ -46,9 +48,9 @@ def agent(
         loop = AgentLoop(
             bus, provider, config.workspace_path, b_dir=config.tools.browser_data_dir, config=config
         )
-        asyncio.create_task(loop.run())
         asyncio.create_task(_handle_approvals(bus))
         if interactive:
+            asyncio.create_task(loop.run())
             sess = PromptSession()
             while True:
                 try:
@@ -56,7 +58,7 @@ def agent(
                         t = await sess.prompt_async(HTML("<b fg='ansiblue'>You:</b> "))
                     if t.lower() in {"exit", "quit"}:
                         break
-                    await bus.publish_inbound(InboundMessage("cli", "user", "direct", t))
+                    await bus.publish_inbound(InboundMessage("cli", "direct", t))
                     while True:
                         m = await bus.consume_outbound()
                         if m.metadata.get("_progress"):
@@ -92,23 +94,30 @@ def gateway():
             provider,
             config.agents.defaults.model,
             on_execute=lambda t: loop.process_direct(t, "heartbeat"),
-            on_notify=lambda r: bus.publish_outbound(OutboundMessage("cli", "direct", r)),
+            on_notify=lambda r: asyncio.create_task(
+                bus.publish_outbound(OutboundMessage("cli", "direct", r))
+            ),
             db=loop.db,
         )
 
         async def on_job(j):
-            if j.payload.kind == "system_event":
-                from nanobot.cron import tasks
+            try:
+                if j.payload.kind == "system_event":
+                    from nanobot.cron import tasks
 
-                if fn := getattr(tasks, j.payload.message, None):
-                    await fn(loop)
-            else:
-                chan, to = j.payload.channel or "cli", j.payload.to or "direct"
-                res = await loop.process_direct(
-                    j.payload.message, f"cron:{j.id}", channel=chan, chat_id=to
-                )
-                if res:
-                    await bus.publish_outbound(OutboundMessage(chan, to, res))
+                    if fn := getattr(tasks, j.payload.message, None):
+                        await fn(loop)
+                else:
+                    chan, to = j.payload.channel or "cli", j.payload.to or "direct"
+                    res = await loop.process_direct(
+                        j.payload.message, f"cron:{j.id}", channel=chan, chat_id=to
+                    )
+                    if res:
+                        await bus.publish_outbound(OutboundMessage(chan, to, res))
+            except Exception:
+                from loguru import logger
+
+                logger.exception("Cron job {} failed", j.id)
 
         cron.on_job = on_job
         for name, sched in {
@@ -117,11 +126,39 @@ def gateway():
             "summarize_git_diffs": "0 8 * * *",
         }.items():
             if not any(j.name == f"System: {name}" for j in cron.list_jobs(include_disabled=True)):
-                job = await cron.add_job(
-                    f"System: {name}", CronSchedule(kind="cron", expr=sched), name
+                await cron.add_job(
+                    f"System: {name}",
+                    CronSchedule(kind="cron", expr=sched),
+                    name,
+                    kind="system_event",
                 )
-                job.payload.kind = "system_event"
-        await asyncio.gather(loop.run(), channels.start_all(), cron.start(), heart.start())
+
+        shutdown_event = asyncio.Event()
+
+        def _signal_handler():
+            shutdown_event.set()
+
+        aloop = asyncio.get_running_loop()
+        import signal
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            aloop.add_signal_handler(sig, _signal_handler)
+
+        tasks = [
+            asyncio.create_task(loop.run(), name="agent-loop"),
+            asyncio.create_task(channels.start_all(), name="channels"),
+            asyncio.create_task(cron.start(), name="cron"),
+            asyncio.create_task(heart.start(), name="heartbeat"),
+        ]
+        done_waiter = asyncio.create_task(shutdown_event.wait())
+        _, _ = await asyncio.wait(
+            [*tasks, done_waiter], return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in tasks:
+            t.cancel()
+        heart.stop()
+        await cron.stop()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     asyncio.run(run())
 

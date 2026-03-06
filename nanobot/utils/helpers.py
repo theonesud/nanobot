@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -18,14 +18,19 @@ def get_workspace_path(workspace: str | None = None) -> Path:
 
 
 def timestamp() -> str:
-    return datetime.now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 _UNSAFE_CHARS = re.compile('[<>:"/\\\\|?*]')
 
+_MAX_FILENAME_LEN = 200
+
 
 def safe_filename(name: str) -> str:
-    return _UNSAFE_CHARS.sub("_", name).strip()
+    result = _UNSAFE_CHARS.sub("_", name).strip()
+    if not result or result in (".", ".."):
+        result = "_"
+    return result[:_MAX_FILENAME_LEN]
 
 
 def get_model_pricing(model: str) -> tuple[float, float]:
@@ -52,6 +57,7 @@ def get_model_pricing(model: str) -> tuple[float, float]:
 
 
 def strip_think(text: str | None) -> str | None:
-    if not text:
+    if text is None:
         return None
-    return re.sub("<think>[\\s\\S]*?</think>", "", text).strip() or None
+    result = re.sub("<think>[\\s\\S]*?</think>", "", text).strip()
+    return result or None

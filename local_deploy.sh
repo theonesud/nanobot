@@ -3,6 +3,16 @@ set -e
 
 echo "🚀 Starting Local Persistent Nanobot Deployment (Docker)..."
 
+# 0. Check for Docker
+if ! command -v docker &> /dev/null; then
+    echo "❌ Docker is not installed. Please install Docker first: https://docs.docker.com/get-docker/"
+    exit 1
+fi
+if ! docker compose version &> /dev/null; then
+    echo "❌ Docker Compose is not available. Please install Docker Compose: https://docs.docker.com/compose/install/"
+    exit 1
+fi
+
 # 1. Ensure config directories exist
 mkdir -p "$HOME/.nanobot" "$HOME/.opencode"
 

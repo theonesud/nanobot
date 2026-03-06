@@ -1,21 +1,23 @@
 #!/bin/bash
-# DO NOT set -e here because sourcing nvm might have minor errors
-# set -e
 
 echo "🚀 Starting Nanobot setup..."
 
 # 0. Node Version Management (nvm)
-# Source nvm for the script context
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+# Source nvm for the script context (in a subshell to avoid set -e issues)
+(
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  if command -v nvm &> /dev/null; then
+      echo "🟢 nvm detected. Using version 20 (recommended)..."
+      nvm install 20 && nvm use 20
+  else
+      echo "⚠️ nvm not found. Using system node..."
+  fi
+) || echo "⚠️ nvm setup had issues, continuing with system node..."
 
-if command -v nvm &> /dev/null; then
-    echo "🟢 nvm detected. Using version 20 (recommended)..."
-    nvm install 20
-    nvm use 20
-else
-    echo "⚠️ nvm not found. Using system node..."
-fi
+# Re-source nvm for the rest of the script
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 # Exit on error for the rest of the script
 set -e

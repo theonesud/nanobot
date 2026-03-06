@@ -16,7 +16,7 @@ sudo apt-get update && sudo apt-get install -y \
 if ! command -v docker &> /dev/null; then
     curl -fsSL https://get.docker.com -o get-docker.sh
     sudo sh get-docker.sh
-    sudo usermod -aG docker $USER
+    sudo usermod -aG docker "${USER:-$(whoami)}"
     echo "🟢 Docker installed. You might need to log out and back in for group changes, but we'll use sudo for now if needed."
 else
     echo "🟢 Docker is already installed"
@@ -33,7 +33,7 @@ fi
 # 3. Setup Nanobot standardized directory
 echo "📂 Setting up Nanobot in /opt/nanobot..."
 sudo mkdir -p /opt/nanobot/config /opt/nanobot/opencode /opt/nanobot/src
-sudo chown -R $USER:$USER /opt/nanobot
+sudo chown -R "${USER:-$(whoami)}":"${USER:-$(whoami)}" /opt/nanobot
 
 cd /opt/nanobot/src
 if [ ! -f "docker-compose.yml" ]; then
@@ -51,7 +51,7 @@ sleep 5
 
 # 6. Run Test Command
 echo "🤖 Testing Nanobot..."
-docker compose run --rm nanobot-cli agent -m "Hi! If you can read this, tell me if your Docker sandboxing is enabled."
+docker compose run --rm nanobot-cli status
 
 echo ""
 echo "✅ Deployment complete!"

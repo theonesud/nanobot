@@ -3,8 +3,9 @@ x-common-config: &common-config
     context: .
     dockerfile: Dockerfile
   volumes:
-    - /opt/nanobot/config:/root/.nanobot
-    - /opt/nanobot/opencode:/root/.opencode
+    - /opt/nanobot/config:/home/nanobot/.nanobot
+    - /opt/nanobot/opencode:/home/nanobot/.opencode
+    # Required for Docker-out-of-Docker (agent spawning sibling containers via exec tool)
     - /var/run/docker.sock:/var/run/docker.sock
 
 services:
@@ -12,7 +13,7 @@ services:
     container_name: nanobot-gateway
     <<: *common-config
     entrypoint: ["sh", "-c"]
-    command: ["cd /app/bridge && npm start & nanobot gateway"]
+    command: ["cd /app/bridge && node dist/index.js & exec nanobot gateway"]
     restart: unless-stopped
     ports:
       - 18790:18790
@@ -24,7 +25,7 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-  
+
   nanobot-cli:
     <<: *common-config
     profiles:

@@ -8,6 +8,7 @@ from loguru import logger
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import OutboundMessage
+from nanobot.utils.files import atomic_write
 
 
 async def _commit(path, msg, ws):
@@ -19,12 +20,23 @@ async def _commit(path, msg, ws):
             "GIT_COMMITTER_NAME": "nanobot",
             "GIT_COMMITTER_EMAIL": "nanobot@ai",
         }
-        subprocess.run(["git", "add", str(path)], cwd=str(ws), check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", msg], cwd=str(ws), env=e, check=True, capture_output=True
+        proc = await asyncio.create_subprocess_exec(
+            "git", "add", str(path),
+            cwd=str(ws),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        await proc.communicate()
+        proc = await asyncio.create_subprocess_exec(
+            "git", "commit", "-m", msg,
+            cwd=str(ws),
+            env=e,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
     except Exception:
-        pass
+        logger.debug("Auto-commit failed for {}", path, exc_info=True)
 
 
 async def summarize_git_diffs(agent: AgentLoop, channel: str = "cli", chat_id: str = "direct"):
@@ -32,7 +44,7 @@ async def summarize_git_diffs(agent: AgentLoop, channel: str = "cli", chat_id: s
         p = await asyncio.create_subprocess_exec(
             "git",
             "log",
-            "--since='24 hours ago'",
+            "--since=24 hours ago",
             "-p",
             "--no-merges",
             stdout=subprocess.PIPE,
@@ -42,8 +54,9 @@ async def summarize_git_diffs(agent: AgentLoop, channel: str = "cli", chat_id: s
         o, e = await p.communicate()
         if p.returncode != 0 or not o.strip():
             return
+        diff_text = o.decode(errors="replace")[:40000]
         res = await agent.process_direct(
-            f"Summarize these git diffs:\n\n```diff\n{o.decode()[:40000]}\n```",
+            f"Summarize these git diffs:\n\n```diff\n{diff_text}\n```",
             session_key="bg:git",
             channel=channel,
             chat_id=chat_id,
@@ -74,7 +87,7 @@ async def nightly_soul_update(agent: AgentLoop):
             if c.startswith("```"):
                 c = re.sub(r"^```[a-zA-Z]*\n", "", c)
                 c = re.sub(r"\n```$", "", c)
-            s_f.write_text(c)
+            atomic_write(s_f, c)
             await _commit(s_f, "nanobot: nightly soul update", agent.workspace)
     except Exception:
         logger.exception("Soul update failed")

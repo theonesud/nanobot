@@ -5,6 +5,8 @@ from pathlib import Path
 
 from loguru import logger
 
+_STALE_LOCK_AGE_SECONDS = 600
+
 
 class FileLock:
     def __init__(self, lock_file: Path, timeout: float = 10.0):
@@ -18,16 +20,25 @@ class FileLock:
             try:
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w") as f:
-                    f.write(str(os.getpid()))
+                    f.write(f"{os.getpid()}:{time.time()}")
                 self._locked = True
                 return self
             except FileExistsError:
                 try:
                     with open(self.lock_file, "r") as f:
-                        pid = int(f.read().strip())
-                    if not self._is_running(pid):
+                        parts = f.read().strip().split(":")
+                        pid = int(parts[0])
+                        created = float(parts[1]) if len(parts) > 1 else 0.0
+                    is_stale = (
+                        not self._is_running(pid)
+                        or (created > 0 and time.time() - created > _STALE_LOCK_AGE_SECONDS)
+                    )
+                    if is_stale:
                         logger.warning("Deleting stale lock file: {}", self.lock_file)
-                        os.remove(self.lock_file)
+                        try:
+                            os.remove(self.lock_file)
+                        except FileNotFoundError:
+                            pass
                         continue
                 except (ValueError, FileNotFoundError):
                     pass

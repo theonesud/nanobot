@@ -1,9 +1,8 @@
-import asyncio
 import collections
 import json
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,15 +17,20 @@ from nanobot.utils.lock import FileLock
 class Session:
     key: str
     messages: list[dict[str, Any]] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
-        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **kwargs}
+        msg = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **kwargs,
+        }
         self.messages.append(msg)
-        self.updated_at = datetime.now()
+        self.updated_at = datetime.now(timezone.utc)
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         unconsolidated = self.messages[self.last_consolidated :]
@@ -82,7 +86,9 @@ class SessionManager:
             session = Session(key=key)
         self._cache[key] = session
         if len(self._cache) > self.max_cache_size:
-            self._cache.popitem(last=False)
+            evicted_key, evicted_session = self._cache.popitem(last=False)
+            logger.debug("🗂 Evicting session {} from cache, saving first", evicted_key)
+            self._save_sync(evicted_session)
         return session
 
     def _load(self, key: str) -> Session | None:
@@ -127,8 +133,8 @@ class SessionManager:
             session = Session(
                 key=key,
                 messages=messages,
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
+                created_at=created_at or datetime.now(timezone.utc),
+                updated_at=updated_at or datetime.now(timezone.utc),
                 metadata=metadata,
                 last_consolidated=last_consolidated,
             )
@@ -143,42 +149,7 @@ class SessionManager:
             logger.warning("❌ Failed to load session {}: {}", key, e)
             return None
 
-    async def save_async(self, session: Session) -> None:
-        path = self._get_session_path(session.key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.with_suffix(".lock")
-        async with FileLock(lock_path):
-            try:
-                meta = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata": session.metadata,
-                    "last_consolidated": session.last_consolidated,
-                }
-                content = json.dumps(meta, ensure_ascii=False) + "\n"
-                for m in session.messages:
-                    content += json.dumps(m, ensure_ascii=False) + "\n"
-                atomic_write(path, content)
-                logger.info("💾 Saved session {} ({} messages)", session.key, len(session.messages))
-            except Exception:
-                raise
-        self._cache[session.key] = session
-        self._cache.move_to_end(session.key)
-        if len(self._cache) > self.max_cache_size:
-            evicted, _ = self._cache.popitem(last=False)
-            logger.debug("🗂 Evicted session {} from cache", evicted)
-
-    def save(self, session: Session) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                pass
-        except RuntimeError:
-            pass
-        path = self._get_session_path(session.key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _serialize(self, session: Session) -> str:
         meta = {
             "_type": "metadata",
             "key": session.key,
@@ -190,4 +161,24 @@ class SessionManager:
         content = json.dumps(meta, ensure_ascii=False) + "\n"
         for m in session.messages:
             content += json.dumps(m, ensure_ascii=False) + "\n"
-        atomic_write(path, content)
+        return content
+
+    def _save_sync(self, session: Session) -> None:
+        path = self._get_session_path(session.key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, self._serialize(session))
+
+    async def save_async(self, session: Session) -> None:
+        path = self._get_session_path(session.key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_suffix(".lock")
+        async with FileLock(lock_path):
+            content = self._serialize(session)
+            atomic_write(path, content)
+            logger.info("💾 Saved session {} ({} messages)", session.key, len(session.messages))
+        self._cache[session.key] = session
+        self._cache.move_to_end(session.key)
+        if len(self._cache) > self.max_cache_size:
+            evicted_key, evicted_session = self._cache.popitem(last=False)
+            logger.debug("🗂 Evicting session {} from cache, saving first", evicted_key)
+            self._save_sync(evicted_session)
